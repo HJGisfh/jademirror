@@ -1,0 +1,167 @@
+@import url('https://fonts.googleapis.com/css2?family=Ma+Shan+Zheng&family=Noto+Serif+SC:wght@400;500;600;700&display=swap');
+
+:root {
+  --ink-900: #142521;
+  --ink-700: #22433d;
+  --ink-500: #40645d;
+  --ink-400: #5f7b74;
+
+  --jade-300: #c7ddcf;
+  --jade-200: #dceadf;
+  --jade-100: #edf5ee;
+  --paper: #f8f3e8;
+  --paper-deep: #efe6d8;
+  --amber: #95612d;
+  --danger: #a44e3f;
+
+  --card-border: rgba(37, 72, 65, 0.16);
+  --card-bg: rgba(255, 255, 255, 0.78);
+  --card-shadow: 0 16px 30px rgba(32, 57, 52, 0.1);
+
+  --radius-lg: 24px;
+  --radius-md: 16px;
+  --radius-sm: 12px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: 'Noto Serif SC', 'STSong', serif;
+  color: var(--ink-900);
+  background:
+    radial-gradient(circle at 14% 18%, rgba(179, 207, 189, 0.3), transparent 28%),
+    radial-gradient(circle at 84% 16%, rgba(252, 233, 195, 0.42), transparent 30%),
+    radial-gradient(circle at 18% 85%, rgba(165, 193, 178, 0.22), transparent 22%),
+    linear-gradient(160deg, var(--paper), var(--paper-deep));
+  background-attachment: fixed;
+}
+
+a {
+  color: inherit;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  color: var(--ink-900);
+  margin: 0;
+  line-height: 1.25;
+}
+
+p {
+  margin: 0;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+.jade-card {
+  border: 1px solid var(--card-border);
+  background: var(--card-bg);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--card-shadow);
+  backdrop-filter: blur(4px);
+}
+
+.jade-button {
+  border: none;
+  cursor: pointer;
+  border-radius: 999px;
+  padding: 0.62rem 1.15rem;
+  font-size: 0.95rem;
+  letter-spacing: 0.02em;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
+}
+
+.jade-button.primary {
+  color: #f6f7f5;
+  background: linear-gradient(135deg, #2f5d52, #4d7b6f);
+  box-shadow: 0 8px 16px rgba(46, 87, 76, 0.27);
+}
+
+.jade-button.secondary {
+  color: var(--ink-700);
+  background: rgba(220, 234, 223, 0.9);
+  border: 1px solid rgba(58, 103, 89, 0.2);
+}
+
+.jade-button.warn {
+  color: #f9f2f0;
+  background: linear-gradient(135deg, #8f483a, #b15f4d);
+}
+
+.jade-button:hover {
+  transform: translateY(-1px);
+}
+
+.jade-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+  transform: none;
+}
+
+.actions-row {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.section-grid {
+  display: grid;
+  gap: 1rem;
+}
+
+.text-muted {
+  color: var(--ink-500);
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  border-radius: 999px;
+  border: 1px solid rgba(61, 99, 86, 0.25);
+  padding: 0.2rem 0.65rem;
+  background: rgba(231, 241, 234, 0.8);
+  color: var(--ink-700);
+  font-size: 0.82rem;
+}
+
+.loading-dot {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 50%;
+  border: 2px solid rgba(42, 76, 66, 0.3);
+  border-top-color: rgba(42, 76, 66, 1);
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 720px) {
+  body {
+    font-size: 15px;
+  }
+
+  .jade-card {
+    border-radius: var(--radius-md);
+  }
+}
