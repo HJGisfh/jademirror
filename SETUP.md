@@ -46,6 +46,12 @@ pip install -r requirements.txt
 copy .env.example .env
 ```
 
+macOS/Linux 可用：
+
+```bash
+cp .env.example .env
+```
+
 编辑 `.env` 并填写 API Key（可选）：
 
 ```env
@@ -57,6 +63,8 @@ QWEN_API_KEY=xxx          # 可选
 ```
 
 若不填写，后端会自动返回演示数据，前端流程仍可完整跑通。
+
+说明：`.env` 是给应用读取的配置文件，不会自动写入每个终端会话变量。通常只需初始化复制一次，后续按需编辑内容即可。
 
 ## 前端环境搭建
 
@@ -150,3 +158,11 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 ```
 
 然后重试激活。
+
+### Edge 语音权限被拒
+
+语音输入与播报建议使用 Edge。若语音按钮不可用：
+
+1. 确认站点地址为 `http://localhost` 或 `https`。
+2. 在地址栏站点权限中允许“麦克风”。
+3. 刷新页面后重试语音输入。

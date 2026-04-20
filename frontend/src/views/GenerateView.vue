@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import EmotionCapture from '@/components/EmotionCapture.vue'
+import GeneratedJadeViewer from '@/components/GeneratedJadeViewer.vue'
 import { emotionLabelMap } from '@/data/questions'
 import { useApiStore } from '@/stores/apiStore'
 import { useAudioStore } from '@/stores/audioStore'
@@ -19,8 +20,7 @@ const promptText = ref(userStore.lastPrompt || '')
 const previewImage = ref(userStore.generatedImageDataUrl || '')
 const pageError = ref('')
 const saveNotice = ref('')
-
-let pressTimer = null
+const touchPulse = ref(false)
 
 async function generateJade() {
   if (!jade.value) {
@@ -69,24 +69,46 @@ async function replayTouchSound() {
   }
 
   try {
-    await audioStore.playDynamicSound({
+    await audioStore.playJadeMelody({
       jade: jade.value,
       emotion: currentEmotion.value,
+      mode: 'touch',
     })
+    touchPulse.value = true
+    window.setTimeout(() => {
+      touchPulse.value = false
+    }, 280)
   } catch (error) {
     pageError.value = error.message || '当前浏览器无法播放音效。'
   }
 }
 
-function beginPress() {
-  clearTimeout(pressTimer)
-  pressTimer = window.setTimeout(() => {
-    replayTouchSound()
-  }, 800)
+async function replayLongPressSound() {
+  if (!jade.value) {
+    return
+  }
+
+  try {
+    await audioStore.playJadeMelody({
+      jade: jade.value,
+      emotion: currentEmotion.value,
+      mode: 'hold',
+    })
+    touchPulse.value = true
+    window.setTimeout(() => {
+      touchPulse.value = false
+    }, 420)
+  } catch (error) {
+    pageError.value = error.message || '当前浏览器无法播放音效。'
+  }
 }
 
-function endPress() {
-  clearTimeout(pressTimer)
+function handleViewerSoundTrigger(mode) {
+  if (mode === 'hold') {
+    replayLongPressSound()
+    return
+  }
+  replayTouchSound()
 }
 
 function saveToGallery() {
@@ -111,7 +133,6 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  clearTimeout(pressTimer)
   window.removeEventListener('pointerdown', primeAudioOnce)
 })
 </script>
@@ -143,18 +164,12 @@ onBeforeUnmount(() => {
 
       <div class="right section-grid">
         <article class="jade-card image-panel">
-          <h3>生成结果</h3>
-          <div
-            class="image-box"
-            @mousedown="beginPress"
-            @mouseup="endPress"
-            @mouseleave="endPress"
-            @touchstart.prevent="beginPress"
-            @touchend="endPress"
-            @touchcancel="endPress"
-          >
-            <img v-if="previewImage" :src="previewImage" alt="专属玉生成图" class="generated-image" />
-            <p v-else class="text-muted">点击“生成专属玉”后将在此展示结果。长按图像 800ms 可触发触摸音效。</p>
+          <h3>3D 生成玉展示</h3>
+          <div class="image-box" :class="{ active: touchPulse }">
+            <GeneratedJadeViewer :jade="jade" :image-src="previewImage" @trigger-sound="handleViewerSoundTrigger" />
+            <p class="text-muted viewer-tip">
+              玉体保持统一器型，不同玉通过纹理与颜色区分。鼠标拖拽可旋转朝向，点击触发约 6 秒旋律。
+            </p>
           </div>
         </article>
 
@@ -195,13 +210,18 @@ onBeforeUnmount(() => {
   background: rgba(242, 248, 244, 0.72);
   text-align: center;
   padding: 0.8rem;
+  transition: transform 0.24s ease, box-shadow 0.24s ease, border-color 0.24s ease;
 }
 
-.generated-image {
-  width: 100%;
-  max-height: 540px;
-  object-fit: contain;
-  border-radius: var(--radius-md);
+.image-box.active {
+  transform: scale(1.01);
+  border-color: rgba(46, 97, 79, 0.52);
+  box-shadow: 0 14px 34px rgba(63, 112, 93, 0.2);
+}
+
+.viewer-tip {
+  margin-top: 0.55rem;
+  font-size: 0.86rem;
 }
 
 .prompt-panel textarea {

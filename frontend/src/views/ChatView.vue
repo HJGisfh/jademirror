@@ -1,18 +1,22 @@
 <script setup>
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import ChatBubble from '@/components/ChatBubble.vue'
 import { useApiStore } from '@/stores/apiStore'
 import { useUserStore } from '@/stores/userStore'
+import { useVoiceStore } from '@/stores/voiceStore'
 
 const userStore = useUserStore()
 const apiStore = useApiStore()
+const voiceStore = useVoiceStore()
 const router = useRouter()
 
 const jade = computed(() => userStore.matchedJade)
 const messages = ref([])
 const draft = ref('')
 const listRef = ref(null)
+const autoSpeakReply = ref(true)
+const holdButtonPressed = ref(false)
 
 const suggestedQuestions = [
   '你经历过什么？',
@@ -54,6 +58,94 @@ function scrollToBottom() {
   })
 }
 
+const latestAssistantMessage = computed(() => {
+  for (let index = messages.value.length - 1; index >= 0; index -= 1) {
+    if (messages.value[index].role === 'assistant') {
+      return messages.value[index]
+    }
+  }
+  return null
+})
+
+const voiceStatusText = computed(() => {
+  if (!voiceStore.recognitionSupported) {
+    return '当前浏览器不支持语音输入，可继续文字对话。'
+  }
+  if (voiceStore.holdListening || voiceStore.listening) {
+    return '正在聆听中，请说话，松开按钮后将自动回填文本。'
+  }
+  if (voiceStore.speaking) {
+    return '玉正在回应你，点击“停止播报”可中断。'
+  }
+  return '可点击“语音输入”或按住“按住说话”与玉交流。'
+})
+
+function mergeTranscriptToDraft(transcript) {
+  const content = String(transcript || '').trim()
+  if (!content) {
+    return
+  }
+  draft.value = draft.value.trim() ? `${draft.value.trim()} ${content}` : content
+}
+
+function appendAssistantMessage(content) {
+  const text = String(content || '').trim() || '我暂时听不清风声，请稍后再问。'
+  messages.value.push({
+    id: Date.now() + Math.random(),
+    role: 'assistant',
+    content: text,
+  })
+  if (autoSpeakReply.value && voiceStore.synthesisSupported) {
+    voiceStore.speak(text)
+  }
+}
+
+async function startVoiceInput() {
+  if (apiStore.chatLoading || !jade.value) {
+    return
+  }
+
+  voiceStore.stopSpeaking()
+  const transcript = await voiceStore.recognizeOnce()
+  mergeTranscriptToDraft(transcript)
+}
+
+function beginHoldToTalk() {
+  if (apiStore.chatLoading || !jade.value || !voiceStore.recognitionSupported) {
+    return
+  }
+  if (holdButtonPressed.value) {
+    return
+  }
+
+  voiceStore.stopSpeaking()
+  const started = voiceStore.startHoldListening()
+  if (!started) {
+    return
+  }
+  holdButtonPressed.value = true
+}
+
+async function endHoldToTalk() {
+  if (!holdButtonPressed.value) {
+    return
+  }
+  holdButtonPressed.value = false
+  const transcript = await voiceStore.stopHoldListening()
+  mergeTranscriptToDraft(transcript)
+}
+
+function stopVoiceInput() {
+  voiceStore.stopListening()
+}
+
+function replayAssistantVoice() {
+  if (!latestAssistantMessage.value || !voiceStore.synthesisSupported) {
+    return
+  }
+  voiceStore.speak(latestAssistantMessage.value.content)
+}
+
 async function createOpeningMessage() {
   if (!jade.value) {
     return
@@ -74,21 +166,11 @@ async function createOpeningMessage() {
       ],
     })
 
-    messages.value = [
-      {
-        id: Date.now(),
-        role: 'assistant',
-        content: intro || fallback,
-      },
-    ]
+    messages.value = []
+    appendAssistantMessage(intro || fallback)
   } catch {
-    messages.value = [
-      {
-        id: Date.now(),
-        role: 'assistant',
-        content: fallback,
-      },
-    ]
+    messages.value = []
+    appendAssistantMessage(fallback)
   }
 
   persistMessages()
@@ -123,6 +205,7 @@ async function restartConversation() {
   }
 
   sessionStorage.removeItem(chatStorageKey.value)
+  voiceStore.stopSpeaking()
   messages.value = []
   await loadMessages(true)
 }
@@ -132,6 +215,9 @@ async function sendMessage() {
   if (!text || apiStore.chatLoading || !jade.value) {
     return
   }
+
+  voiceStore.stopListening()
+  voiceStore.stopSpeaking()
 
   messages.value.push({
     id: Date.now(),
@@ -154,17 +240,9 @@ async function sendMessage() {
       })),
     })
 
-    messages.value.push({
-      id: Date.now() + 1,
-      role: 'assistant',
-      content,
-    })
+    appendAssistantMessage(content)
   } catch {
-    messages.value.push({
-      id: Date.now() + 2,
-      role: 'assistant',
-      content: '我暂时听不清风声，请稍后再问。',
-    })
+    appendAssistantMessage('我暂时听不清风声，请稍后再问。')
   }
 
   persistMessages()
@@ -179,11 +257,18 @@ watch(
 )
 
 onMounted(() => {
+  voiceStore.init()
   if (!jade.value) {
     router.push('/test')
     return
   }
   loadMessages()
+})
+
+onBeforeUnmount(() => {
+  holdButtonPressed.value = false
+  voiceStore.stopListening()
+  voiceStore.stopSpeaking()
 })
 </script>
 
@@ -228,18 +313,79 @@ onMounted(() => {
       </div>
 
       <footer class="composer">
-        <textarea
-          v-model="draft"
-          class="composer-input"
-          rows="2"
-          placeholder="向这件古玉提问..."
-          @keydown.enter.exact.prevent="sendMessage"
-        ></textarea>
-        <button type="button" class="jade-button primary" :disabled="apiStore.chatLoading" @click="sendMessage">
+        <div class="composer-main">
+          <textarea
+            v-model="draft"
+            class="composer-input"
+            rows="2"
+            placeholder="向这件古玉提问，或点击语音输入..."
+            @keydown.enter.exact.prevent="sendMessage"
+          ></textarea>
+          <p class="voice-hint text-muted">{{ voiceStatusText }}</p>
+          <div class="voice-actions">
+            <button
+              type="button"
+              class="jade-button secondary"
+              :disabled="!voiceStore.recognitionSupported || apiStore.chatLoading || voiceStore.listening || voiceStore.holdListening"
+              @click="startVoiceInput"
+            >
+              {{ voiceStore.listening ? '聆听中...' : '语音输入' }}
+            </button>
+            <button
+              type="button"
+              class="jade-button secondary hold-talk"
+              :class="{ active: holdButtonPressed || voiceStore.holdListening }"
+              :disabled="!voiceStore.recognitionSupported || apiStore.chatLoading"
+              @pointerdown.prevent="beginHoldToTalk"
+              @pointerup.prevent="endHoldToTalk"
+              @pointerleave.prevent="endHoldToTalk"
+              @pointercancel.prevent="endHoldToTalk"
+            >
+              {{ holdButtonPressed || voiceStore.holdListening ? '松开结束' : '按住说话' }}
+            </button>
+            <button
+              type="button"
+              class="jade-button secondary"
+              :disabled="!voiceStore.listening && !voiceStore.holdListening"
+              @click="stopVoiceInput"
+            >
+              停止聆听
+            </button>
+            <button
+              type="button"
+              class="jade-button secondary"
+              :disabled="!voiceStore.synthesisSupported || !latestAssistantMessage"
+              @click="replayAssistantVoice"
+            >
+              重播玉音
+            </button>
+            <button
+              type="button"
+              class="jade-button secondary"
+              :disabled="!voiceStore.speaking"
+              @click="voiceStore.stopSpeaking"
+            >
+              停止播报
+            </button>
+            <label class="auto-speak">
+              <input v-model="autoSpeakReply" type="checkbox" />
+              自动播报回复
+            </label>
+          </div>
+          <div v-if="voiceStore.holdListening || voiceStore.listening" class="voice-meter" aria-hidden="true">
+            <span class="meter-bar bar-1"></span>
+            <span class="meter-bar bar-2"></span>
+            <span class="meter-bar bar-3"></span>
+            <span class="meter-bar bar-4"></span>
+            <span class="meter-bar bar-5"></span>
+          </div>
+        </div>
+        <button type="button" class="jade-button primary send-btn" :disabled="apiStore.chatLoading" @click="sendMessage">
           {{ apiStore.chatLoading ? '回复生成中...' : '发送' }}
         </button>
       </footer>
 
+      <p v-if="voiceStore.lastError" class="error-text">{{ voiceStore.lastError }}</p>
       <p v-if="apiStore.lastError" class="error-text">{{ apiStore.lastError }}</p>
     </article>
   </section>
@@ -277,12 +423,19 @@ onMounted(() => {
   border-radius: var(--radius-md);
   background: rgba(232, 241, 235, 0.45);
   border: 1px solid rgba(69, 100, 90, 0.18);
+  box-shadow: inset 0 14px 22px rgba(249, 252, 250, 0.4);
 }
 
 .composer {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 0.65rem;
+  align-items: start;
+}
+
+.composer-main {
+  display: grid;
+  gap: 0.52rem;
 }
 
 .composer-input {
@@ -292,6 +445,79 @@ onMounted(() => {
   border-radius: var(--radius-md);
   padding: 0.65rem 0.72rem;
   background: rgba(252, 253, 252, 0.92);
+}
+
+.voice-hint {
+  font-size: 0.85rem;
+}
+
+.voice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.46rem;
+}
+
+.hold-talk.active {
+  background: rgba(51, 104, 86, 0.92);
+  color: #eef6f2;
+  border-color: transparent;
+}
+
+.voice-meter {
+  height: 42px;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(53, 102, 84, 0.24);
+  background: linear-gradient(120deg, rgba(235, 245, 239, 0.95), rgba(247, 252, 248, 0.9));
+  display: flex;
+  align-items: end;
+  justify-content: center;
+  gap: 0.32rem;
+  padding: 0.35rem 0.55rem;
+}
+
+.meter-bar {
+  width: 6px;
+  height: 35%;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #2a6e59, #7ab298);
+  animation: meter-rise 0.9s ease-in-out infinite;
+  transform-origin: bottom;
+}
+
+.bar-2 {
+  animation-delay: 0.08s;
+}
+
+.bar-3 {
+  animation-delay: 0.16s;
+}
+
+.bar-4 {
+  animation-delay: 0.24s;
+}
+
+.bar-5 {
+  animation-delay: 0.32s;
+}
+
+.auto-speak {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: 999px;
+  padding: 0.3rem 0.62rem;
+  border: 1px solid rgba(56, 95, 81, 0.22);
+  background: rgba(245, 250, 247, 0.9);
+  color: var(--ink-700);
+  font-size: 0.82rem;
+}
+
+.auto-speak input {
+  accent-color: #2f6757;
+}
+
+.send-btn {
+  min-width: 108px;
 }
 
 .suggestions {
@@ -333,9 +559,28 @@ onMounted(() => {
   color: var(--danger);
 }
 
+@keyframes meter-rise {
+  0% {
+    transform: scaleY(0.45);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scaleY(1.25);
+    opacity: 1;
+  }
+  100% {
+    transform: scaleY(0.5);
+    opacity: 0.55;
+  }
+}
+
 @media (max-width: 780px) {
   .composer {
     grid-template-columns: 1fr;
+  }
+
+  .send-btn {
+    width: 100%;
   }
 }
 </style>

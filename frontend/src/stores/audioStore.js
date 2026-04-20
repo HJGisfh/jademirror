@@ -23,6 +23,8 @@ export const useAudioStore = defineStore('audio', {
     audioContext: null,
     initialized: false,
     muted: readMuted(),
+    activeNodes: [],
+    melodyEndAt: 0,
   }),
   actions: {
     setMuted(value) {
@@ -97,6 +99,124 @@ export const useAudioStore = defineStore('audio', {
 
       osc.start(now)
       osc.stop(now + decay)
+
+      this.activeNodes.push({ osc, gain, filter })
+      osc.onended = () => {
+        this.activeNodes = this.activeNodes.filter((item) => item.osc !== osc)
+      }
+    },
+    stopAllSounds() {
+      if (!this.audioContext) {
+        return
+      }
+
+      const now = this.audioContext.currentTime
+      for (const item of this.activeNodes) {
+        try {
+          item.gain.gain.cancelScheduledValues(now)
+          item.gain.gain.setValueAtTime(Math.max(item.gain.gain.value, 0.0001), now)
+          item.gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.04)
+          item.osc.stop(now + 0.05)
+        } catch {
+          // ignore nodes already stopped
+        }
+      }
+
+      this.activeNodes = []
+      this.melodyEndAt = now
+    },
+    createMelodyPattern({ emotion = 'neutral', baseFreq = 330, intensity = 'short' }) {
+      const base = {
+        neutral: [0, 3, 5, 7, 5, 3],
+        happy: [0, 4, 7, 9, 7, 4],
+        sad: [0, 2, 3, 5, 3, 2],
+        angry: [0, 1, 5, 6, 4, 1],
+        surprised: [0, 7, 12, 7, 10, 5],
+      }
+
+      const semitones = base[emotion] || base.neutral
+      const duration = intensity === 'extended' ? 0.22 : 0.16
+      const gap = intensity === 'extended' ? 0.03 : 0.02
+      const targetSeconds = intensity === 'extended' ? 7.2 : 6
+
+      const notes = []
+      let elapsed = 0
+
+      while (elapsed < targetSeconds) {
+        for (const semi of semitones) {
+          if (elapsed >= targetSeconds) {
+            break
+          }
+
+          const remaining = targetSeconds - elapsed
+          const noteDuration = Math.max(Math.min(duration, remaining), 0.08)
+
+          notes.push({
+            freq: baseFreq * Math.pow(2, semi / 12),
+            duration: noteDuration,
+            gap,
+          })
+
+          elapsed += noteDuration + gap
+        }
+      }
+
+      return notes
+    },
+    async playJadeMelody({ jade, emotion = 'neutral', mode = 'touch', overrideAudioParams = null }) {
+      if (this.muted) {
+        return
+      }
+
+      const ctx = await this.ensureContext()
+      const params = overrideAudioParams || jade?.audioParams || {}
+      const modifier = emotionModifiers[emotion] || emotionModifiers.neutral
+      const baseFreq = (params.baseFreq || 330) * modifier.freqFactor
+      const filterFreq = (params.filterFreq || 1200) * modifier.filterFactor
+      const waveform = modifier.waveform || params.waveform || 'sine'
+      const filterType = params.filterType || 'lowpass'
+      const now = ctx.currentTime
+      const startAt = Math.max(now + 0.02, this.melodyEndAt)
+      const notes = this.createMelodyPattern({
+        emotion,
+        baseFreq,
+        intensity: mode === 'hold' ? 'extended' : 'short',
+      })
+
+      let cursor = startAt
+      for (const note of notes) {
+        const osc = ctx.createOscillator()
+        const gain = ctx.createGain()
+        const filter = ctx.createBiquadFilter()
+
+        osc.type = waveform
+        osc.frequency.setValueAtTime(note.freq, cursor)
+
+        filter.type = filterType
+        filter.frequency.setValueAtTime(filterFreq, cursor)
+        filter.Q.setValueAtTime(0.75, cursor)
+
+        const peakGain = mode === 'hold' ? 0.12 * modifier.gain : 0.09 * modifier.gain
+        gain.gain.setValueAtTime(0.0001, cursor)
+        gain.gain.exponentialRampToValueAtTime(peakGain, cursor + 0.03)
+        gain.gain.exponentialRampToValueAtTime(0.0001, cursor + note.duration)
+
+        osc.connect(filter)
+        filter.connect(gain)
+        gain.connect(ctx.destination)
+
+        osc.start(cursor)
+        osc.stop(cursor + note.duration)
+
+        this.activeNodes.push({ osc, gain, filter })
+        osc.onended = () => {
+          this.activeNodes = this.activeNodes.filter((item) => item.osc !== osc)
+        }
+
+        cursor += note.duration + note.gap
+      }
+
+      this.melodyEndAt = cursor
     },
   },
 })
