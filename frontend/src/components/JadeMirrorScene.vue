@@ -1,8 +1,12 @@
 <script setup>
 import { onMounted, onUnmounted, ref } from 'vue'
 import * as THREE from 'three'
+import { useAudioStore } from '@/stores/audioStore'
+import { useUserStore } from '@/stores/userStore'
 
 const containerRef = ref(null)
+const audioStore = useAudioStore()
+const userStore = useUserStore()
 
 let renderer = null
 let scene = null
@@ -10,6 +14,9 @@ let camera = null
 let ringMesh = null
 let innerMesh = null
 let frameId = null
+let raycaster = null
+let pointer = null
+let glowUntil = 0
 
 function buildScene() {
   const container = containerRef.value
@@ -61,6 +68,9 @@ function buildScene() {
   const pointB = new THREE.PointLight(0xeed39a, 0.9, 10)
   pointB.position.set(-2.8, -1.7, 2)
   scene.add(pointB)
+
+  raycaster = new THREE.Raycaster()
+  pointer = new THREE.Vector2()
 }
 
 function animate() {
@@ -73,8 +83,46 @@ function animate() {
   innerMesh.rotation.z -= 0.006
   innerMesh.position.y = Math.sin(performance.now() * 0.0014) * 0.05
 
+  const now = performance.now()
+  if (now < glowUntil) {
+    innerMesh.material.emissiveIntensity = 0.34
+  } else {
+    innerMesh.material.emissiveIntensity = 0.16
+  }
+
   renderer.render(scene, camera)
   frameId = requestAnimationFrame(animate)
+}
+
+async function handlePointerDown(event) {
+  const container = containerRef.value
+  if (!container || !renderer || !camera || !raycaster || !pointer) {
+    return
+  }
+
+  const rect = renderer.domElement.getBoundingClientRect()
+  pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
+  pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
+
+  raycaster.setFromCamera(pointer, camera)
+  const hits = raycaster.intersectObjects([ringMesh, innerMesh], false)
+  if (!hits.length) {
+    return
+  }
+
+  const matchedJade = userStore.matchedJade
+  const emotion = userStore.currentEmotion || 'neutral'
+
+  try {
+    await audioStore.playJadeMelody({
+      jade: matchedJade,
+      emotion,
+      mode: 'touch',
+    })
+    glowUntil = performance.now() + 260
+  } catch {
+    // ignore audio failures in scene interaction
+  }
 }
 
 function handleResize() {
@@ -97,6 +145,9 @@ function disposeScene() {
   }
 
   window.removeEventListener('resize', handleResize)
+  if (renderer && renderer.domElement) {
+    renderer.domElement.removeEventListener('pointerdown', handlePointerDown)
+  }
 
   if (ringMesh) {
     ringMesh.geometry.dispose()
@@ -120,11 +171,16 @@ function disposeScene() {
   renderer = null
   ringMesh = null
   innerMesh = null
+  raycaster = null
+  pointer = null
 }
 
 onMounted(() => {
   buildScene()
   animate()
+  if (renderer?.domElement) {
+    renderer.domElement.addEventListener('pointerdown', handlePointerDown)
+  }
   window.addEventListener('resize', handleResize)
 })
 

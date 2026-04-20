@@ -24,9 +24,16 @@ function visitGallery() {
       <JadeMirrorScene />
 
       <div class="stage-copy">
+        <p class="hero-kicker">JadeMirror · 心象实验场</p>
         <h1>以玉为镜，照见本心</h1>
         <p class="stage-subtitle">在旋转玉璧中开启一段古今对话。</p>
         <p class="stage-desc">让传统玉器拥有可对话、可生成、可触摸的数字生命。</p>
+
+        <div class="feature-row">
+          <span class="feature-pill">语音对话</span>
+          <span class="feature-pill">触玉成乐</span>
+          <span class="feature-pill">情绪共振生成</span>
+        </div>
 
         <button type="button" class="jade-button primary main-cta" @click="startJourney">开始照心</button>
 
@@ -55,6 +62,19 @@ function visitGallery() {
   justify-items: center;
   background:
     radial-gradient(circle at 50% 16%, rgba(237, 247, 241, 0.7), rgba(247, 242, 233, 0.85));
+  position: relative;
+  overflow: hidden;
+}
+
+.mirror-stage::after {
+  content: '';
+  position: absolute;
+  inset: auto -20% -50% auto;
+  width: 360px;
+  height: 360px;
+  border-radius: 999px;
+  background: radial-gradient(circle, rgba(160, 194, 175, 0.2), transparent 70%);
+  pointer-events: none;
 }
 
 .stage-copy {
@@ -63,6 +83,16 @@ function visitGallery() {
   justify-items: center;
   text-align: center;
   gap: 0.6rem;
+  position: relative;
+  z-index: 1;
+}
+
+.hero-kicker {
+  margin: 0;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-500);
+  font-size: 0.75rem;
 }
 
 .stage-copy h1 {
@@ -83,10 +113,27 @@ function visitGallery() {
   font-size: 0.95rem;
 }
 
+.feature-row {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.feature-pill {
+  border-radius: 999px;
+  border: 1px solid rgba(58, 95, 80, 0.2);
+  background: rgba(241, 247, 243, 0.82);
+  color: var(--ink-700);
+  padding: 0.3rem 0.7rem;
+  font-size: 0.82rem;
+}
+
 .main-cta {
   margin-top: 0.35rem;
   min-width: 156px;
   font-size: 1rem;
+  min-height: 42px;
 }
 
 .gallery-link {

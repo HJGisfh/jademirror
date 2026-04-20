@@ -8,6 +8,9 @@ const router = useRouter()
 
 const jade = computed(() => userStore.matchedJade)
 const scorePercent = computed(() => Math.round((userStore.matchScore || 0) * 100))
+const scoreStyle = computed(() => ({
+  '--score-angle': `${Math.max(0, Math.min(100, scorePercent.value)) * 3.6}deg`,
+}))
 </script>
 
 <template>
@@ -16,7 +19,12 @@ const scorePercent = computed(() => Math.round((userStore.matchScore || 0) * 100
       <img :src="jade.image" :alt="jade.name" class="jade-image" />
 
       <div class="result-info">
-        <p class="status-pill">匹配度 {{ scorePercent }}%</p>
+        <div class="score-wrap" :style="scoreStyle">
+          <div class="score-inner">
+            <p class="score-num">{{ scorePercent }}%</p>
+            <p class="score-label">匹配度</p>
+          </div>
+        </div>
         <h2>{{ jade.dynasty }}代 · {{ jade.name }}</h2>
         <p class="text-muted">{{ jade.description }}</p>
 
@@ -66,6 +74,39 @@ const scorePercent = computed(() => Math.round((userStore.matchScore || 0) * 100
   display: grid;
   align-content: flex-start;
   gap: 0.7rem;
+}
+
+.score-wrap {
+  width: 112px;
+  height: 112px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: conic-gradient(#2d6d59 var(--score-angle), rgba(117, 157, 139, 0.22) 0);
+  box-shadow: inset 0 0 0 1px rgba(45, 94, 77, 0.18);
+}
+
+.score-inner {
+  width: 86px;
+  height: 86px;
+  border-radius: 999px;
+  background: rgba(248, 252, 250, 0.95);
+  border: 1px solid rgba(56, 92, 79, 0.18);
+  display: grid;
+  align-content: center;
+  justify-items: center;
+}
+
+.score-num {
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--ink-700);
+}
+
+.score-label {
+  margin-top: 0.05rem;
+  font-size: 0.76rem;
+  color: var(--ink-500);
 }
 
 .reason-box {

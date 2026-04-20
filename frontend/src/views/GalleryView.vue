@@ -43,9 +43,10 @@ async function replayWorkSound(work) {
   pageError.value = ''
 
   try {
-    await audioStore.playDynamicSound({
+    await audioStore.playJadeMelody({
       jade: null,
       emotion: work.emotion,
+      mode: 'touch',
       overrideAudioParams: work.audioParams,
     })
   } catch (error) {
@@ -117,6 +118,13 @@ async function replayWorkSound(work) {
   padding: 0.75rem;
   display: grid;
   gap: 0.65rem;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.86), rgba(241, 248, 243, 0.72));
+  transition: transform 0.22s ease, box-shadow 0.22s ease;
+}
+
+.work-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 16px 30px rgba(39, 72, 62, 0.12);
 }
 
 .image-trigger {
@@ -132,6 +140,11 @@ async function replayWorkSound(work) {
   width: 100%;
   aspect-ratio: 1 / 1;
   object-fit: cover;
+  transition: transform 0.24s ease;
+}
+
+.image-trigger:hover img {
+  transform: scale(1.03);
 }
 
 .work-body {
