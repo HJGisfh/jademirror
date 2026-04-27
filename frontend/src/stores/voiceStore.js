@@ -3,6 +3,19 @@ import { defineStore } from 'pinia'
 const RECOGNITION_LANG = 'zh-CN'
 const SPEECH_RATE = 0.96
 const SPEECH_PITCH = 1
+const MOOD_SPEECH_MAP = {
+  calm: { rate: 0.9, pitch: 0.95 },
+  comforting: { rate: 0.88, pitch: 0.92 },
+  cheerful: { rate: 1.02, pitch: 1.08 },
+  energetic: { rate: 1.05, pitch: 1.1 },
+  contemplative: { rate: 0.86, pitch: 0.9 },
+}
+const PERSONA_SPEECH_MAP = {
+  default: { rate: 1, pitch: 1 },
+  warm: { rate: 0.96, pitch: 0.94 },
+  bright: { rate: 1.03, pitch: 1.06 },
+  deep: { rate: 0.9, pitch: 0.88 },
+}
 let holdSessionResolve = null
 let holdSessionPromise = null
 
@@ -23,6 +36,27 @@ function readSupport() {
   }
 }
 
+function resolveSpeechProfile(mood) {
+  const key = String(mood || '').trim().toLowerCase()
+  if (!key) {
+    return { rate: SPEECH_RATE, pitch: SPEECH_PITCH }
+  }
+
+  if (MOOD_SPEECH_MAP[key]) {
+    return MOOD_SPEECH_MAP[key]
+  }
+
+  if (['anxious', 'sad', 'tired'].includes(key)) {
+    return MOOD_SPEECH_MAP.comforting
+  }
+
+  if (['happy', 'curious', 'excited'].includes(key)) {
+    return MOOD_SPEECH_MAP.cheerful
+  }
+
+  return { rate: SPEECH_RATE, pitch: SPEECH_PITCH }
+}
+
 export const useVoiceStore = defineStore('voice', {
   state: () => ({
     recognition: null,
@@ -35,6 +69,7 @@ export const useVoiceStore = defineStore('voice', {
     synthesisSupported: false,
     initialized: false,
     holdListening: false,
+    persona: 'default',
   }),
   actions: {
     init() {
@@ -237,6 +272,17 @@ export const useVoiceStore = defineStore('voice', {
       this.speaking = false
     },
     speak(text) {
+      this.speakWithMood(text, '')
+    },
+    setPersona(persona) {
+      const key = String(persona || '').trim().toLowerCase()
+      if (!PERSONA_SPEECH_MAP[key]) {
+        this.persona = 'default'
+        return
+      }
+      this.persona = key
+    },
+    speakWithMood(text, mood = '') {
       this.init()
       if (!this.synthesisSupported || typeof window === 'undefined') {
         return
@@ -251,8 +297,10 @@ export const useVoiceStore = defineStore('voice', {
 
       const utter = new SpeechSynthesisUtterance(content)
       utter.lang = RECOGNITION_LANG
-      utter.rate = SPEECH_RATE
-      utter.pitch = SPEECH_PITCH
+      const profile = resolveSpeechProfile(mood)
+      const personaProfile = PERSONA_SPEECH_MAP[this.persona] || PERSONA_SPEECH_MAP.default
+      utter.rate = Math.max(0.6, Math.min(1.3, profile.rate * personaProfile.rate))
+      utter.pitch = Math.max(0.6, Math.min(1.4, profile.pitch * personaProfile.pitch))
 
       utter.onstart = () => {
         this.speaking = true
