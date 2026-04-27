@@ -1,3 +1,4 @@
+import json
 import os
 import secrets
 import sqlite3
@@ -79,6 +80,54 @@ def init_auth_db():
                 FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
             )
             """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS assistant_memory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                memory_type TEXT NOT NULL,
+                content TEXT NOT NULL,
+                pinned INTEGER NOT NULL DEFAULT 0,
+                weight REAL NOT NULL DEFAULT 0.5,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+            """
+        )
+        columns = [row['name'] for row in conn.execute('PRAGMA table_info(assistant_memory)').fetchall()]
+        if 'pinned' not in columns:
+            conn.execute('ALTER TABLE assistant_memory ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0')
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS assistant_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                stage TEXT NOT NULL,
+                user_text TEXT NOT NULL,
+                assistant_reply TEXT NOT NULL,
+                next_action TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS assistant_memory_digest (
+                user_id INTEGER PRIMARY KEY,
+                digest_text TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            'CREATE INDEX IF NOT EXISTS idx_assistant_memory_user ON assistant_memory(user_id, updated_at DESC)'
+        )
+        conn.execute(
+            'CREATE INDEX IF NOT EXISTS idx_assistant_events_user ON assistant_events(user_id, created_at DESC)'
         )
         conn.execute('CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)')
         conn.execute('CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at)')
@@ -377,6 +426,298 @@ def parse_deepseek_content(data):
     return str(content)
 
 
+def fetch_memories(user_id, limit=8):
+    with db_connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, memory_type, content, pinned, weight, updated_at
+            FROM assistant_memory
+            WHERE user_id = ?
+            ORDER BY pinned DESC, weight DESC, updated_at DESC
+            LIMIT ?
+            """,
+            (user_id, limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def save_memory(user_id, memory_type, content, weight=0.6):
+    text = str(content or '').strip()
+    if not text:
+        return
+
+    now_ts = utc_now_ts()
+    with db_connect() as conn:
+        existing = conn.execute(
+            """
+            SELECT id
+            FROM assistant_memory
+            WHERE user_id = ? AND memory_type = ? AND content = ?
+            LIMIT 1
+            """,
+            (user_id, memory_type, text),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                """
+                UPDATE assistant_memory
+                SET weight = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (float(weight), now_ts, existing['id']),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO assistant_memory(user_id, memory_type, content, weight, created_at, updated_at)
+                VALUES(?, ?, ?, ?, ?, ?)
+                """,
+                (user_id, memory_type, text, float(weight), now_ts, now_ts),
+            )
+        conn.commit()
+
+
+def pin_memory(user_id, memory_id, pinned):
+    with db_connect() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE assistant_memory
+            SET pinned = ?, weight = ?, updated_at = ?
+            WHERE id = ? AND user_id = ?
+            """,
+            (
+                1 if pinned else 0,
+                1.0 if pinned else 0.62,
+                utc_now_ts(),
+                int(memory_id),
+                int(user_id),
+            ),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def delete_memory(user_id, memory_id):
+    with db_connect() as conn:
+        cursor = conn.execute(
+            'DELETE FROM assistant_memory WHERE id = ? AND user_id = ?',
+            (int(memory_id), int(user_id)),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def clear_memories(user_id):
+    with db_connect() as conn:
+        conn.execute('DELETE FROM assistant_memory WHERE user_id = ?', (int(user_id),))
+        conn.execute('DELETE FROM assistant_memory_digest WHERE user_id = ?', (int(user_id),))
+        conn.commit()
+
+
+def append_assistant_event(user_id, stage, user_text, assistant_reply, next_action):
+    with db_connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO assistant_events(user_id, stage, user_text, assistant_reply, next_action, created_at)
+            VALUES(?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                str(stage or 'idle'),
+                str(user_text or '')[:1000],
+                str(assistant_reply or '')[:2000],
+                str(next_action or 'free_chat'),
+                utc_now_ts(),
+            ),
+        )
+        conn.commit()
+
+
+def fetch_recent_events(user_id, limit=6):
+    with db_connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT stage, user_text, assistant_reply, next_action, created_at
+            FROM assistant_events
+            WHERE user_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (user_id, limit),
+        ).fetchall()
+    history = []
+    for row in reversed(rows):
+        history.append(
+            {
+                'stage': row['stage'],
+                'user_text': row['user_text'],
+                'assistant_reply': row['assistant_reply'],
+                'next_action': row['next_action'],
+            }
+        )
+    return history
+
+
+def get_memory_digest(user_id):
+    with db_connect() as conn:
+        row = conn.execute(
+            """
+            SELECT digest_text, updated_at
+            FROM assistant_memory_digest
+            WHERE user_id = ?
+            LIMIT 1
+            """,
+            (user_id,),
+        ).fetchone()
+    if not row:
+        return ''
+    return str(row['digest_text'] or '').strip()
+
+
+def rebuild_memory_digest(user_id):
+    memories = fetch_memories(user_id, limit=12)
+    events = fetch_recent_events(user_id, limit=6)
+
+    memory_lines = []
+    for item in memories[:6]:
+        memory_type = item.get('memory_type', 'preference')
+        content = str(item.get('content') or '').strip()
+        if not content:
+            continue
+        pin_mark = '★' if item.get('pinned') else ''
+        memory_lines.append(f'{pin_mark}{memory_type}:{content[:40]}')
+
+    event_lines = []
+    for item in events[-3:]:
+        action = str(item.get('next_action') or 'free_chat')
+        user_text = str(item.get('user_text') or '').strip()
+        if not user_text:
+            continue
+        event_lines.append(f'{action}:{user_text[:32]}')
+
+    digest_parts = []
+    if memory_lines:
+        digest_parts.append('长期记忆=' + ' | '.join(memory_lines))
+    if event_lines:
+        digest_parts.append('近期轨迹=' + ' | '.join(event_lines))
+    digest_text = '；'.join(digest_parts)[:900] or '暂无可用记忆摘要'
+
+    now_ts = utc_now_ts()
+    with db_connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO assistant_memory_digest(user_id, digest_text, updated_at)
+            VALUES(?, ?, ?)
+            ON CONFLICT(user_id)
+            DO UPDATE SET digest_text=excluded.digest_text, updated_at=excluded.updated_at
+            """,
+            (user_id, digest_text, now_ts),
+        )
+        conn.commit()
+    return digest_text
+
+
+def extract_json_object(text):
+    raw = str(text or '').strip()
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+
+    start = raw.find('{')
+    end = raw.rfind('}')
+    if start >= 0 and end > start:
+        try:
+            return json.loads(raw[start : end + 1])
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def normalize_next_action(action):
+    mapping = {
+        'start_test': 'start_test',
+        'continue_test': 'continue_test',
+        'show_result': 'show_result',
+        'go_chat': 'go_chat',
+        'go_generate': 'go_generate',
+        'go_gallery': 'go_gallery',
+        'free_chat': 'free_chat',
+        'save_work': 'save_work',
+        'generate_jade': 'generate_jade',
+        'delete_work': 'delete_work',
+        'open_work': 'open_work',
+        'start_gallery_tour': 'start_gallery_tour',
+        'next_gallery_item': 'next_gallery_item',
+        'prev_gallery_item': 'prev_gallery_item',
+        'stop_gallery_tour': 'stop_gallery_tour',
+    }
+    key = str(action or '').strip().lower()
+    return mapping.get(key, 'free_chat')
+
+
+def route_for_action(action):
+    route_map = {
+        'start_test': '/test',
+        'continue_test': '/test',
+        'show_result': '/result',
+        'go_chat': '/chat',
+        'go_generate': '/generate',
+        'go_gallery': '/gallery',
+        'generate_jade': '/generate',
+        'save_work': '/generate',
+        'delete_work': '/gallery',
+        'open_work': '/gallery',
+        'start_gallery_tour': '/gallery',
+        'next_gallery_item': '/gallery',
+        'prev_gallery_item': '/gallery',
+        'stop_gallery_tour': '/gallery',
+    }
+    return route_map.get(action, '')
+
+
+def build_assistant_system_prompt(proactive_mode=False):
+    mode_rules = (
+        '5) 本轮是“空闲主动关怀模式”，你要自然开启话题，先给一句温柔陪伴，再抛出一个玉文化相关问题。'
+        if proactive_mode
+        else '5) 优先衔接用户话题，再用一句温柔引导推进主流程。'
+    )
+    return (
+        '你是“玉灵童子”，负责全程主动引导用户完成 JadeMirror 全流程。\n'
+        '你的目标：\n'
+        '1) 用自然中文短句引导用户完成：测试->匹配->对话->生成->展厅。\n'
+        '2) 语气温柔、拟人、陪伴式，减少命令式语气。\n'
+        '3) 若用户偏离主线，也先接住情绪，再轻柔拉回下一步。\n'
+        '4) 始终稳定维持“玉灵童子”身份，不可自称模型或助手系统。\n'
+        '5) 若用户明确要求执行操作（如生成、保存、删除、导览切换），必须给出对应 next_action。\n'
+        f'{mode_rules}\n'
+        '6) 输出必须是 JSON，不要输出 JSON 之外文本。\n\n'
+        'JSON 模式：\n'
+        '{\n'
+        '  "reply": "给用户说的话（40-120字）",\n'
+        '  "next_action": "start_test|continue_test|show_result|go_chat|go_generate|go_gallery|generate_jade|save_work|delete_work|open_work|start_gallery_tour|next_gallery_item|prev_gallery_item|stop_gallery_tour|free_chat",\n'
+        '  "action_payload": {"index": 1, "note": "可选参数；index 为作品序号(从1开始)"},\n'
+        '  "memory": ["可写入长期记忆的短句，最多2条"],\n'
+        '  "emotion": "用户当前情绪判断（如 calm/anxious/curious）"\n'
+        '}\n'
+    )
+
+
+def build_assistant_user_prompt(*, stage, user_text, context, memories, events, profile, memory_digest=''):
+    payload = {
+        'stage': stage,
+        'user_text': user_text,
+        'context': context,
+        'profile': profile,
+        'memory_digest': memory_digest,
+        'long_term_memories': memories,
+        'recent_events': events,
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
 def extract_qwen_image_url(data, headers):
     # Synchronous multimodal response format for qwen-image-2.0 series.
     output = data.get('output') or {}
@@ -621,6 +962,321 @@ def deepseek_chat():
             return json_error(f'DeepSeek 调用失败：SDK={sdk_error}; HTTP={error}', 502)
 
     return jsonify({'content': content, 'mock': False})
+
+
+@app.post('/api/assistant/turn')
+def assistant_turn():
+    if not check_rate_limit('assistant-turn'):
+        return json_error('请求过于频繁，请稍后再试。', 429)
+
+    auth_result, auth_error = require_auth()
+    if auth_error:
+        return auth_error
+
+    data = request.get_json(silent=True) or {}
+    user_text = str(data.get('text', '')).strip()
+    stage = str(data.get('stage', 'idle')).strip() or 'idle'
+    context = data.get('context') if isinstance(data.get('context'), dict) else {}
+    privacy_mode = bool(context.get('privacy_mode', False))
+    memory_enabled = not privacy_mode
+
+    if not user_text:
+        return json_error('text 不能为空。')
+
+    user = auth_result['user']
+    user_id = user['id']
+    deepseek_api_key = (os.getenv('DEEPSEEK_API_KEY') or '').strip()
+    memories = fetch_memories(user_id, limit=8) if memory_enabled else []
+    events = fetch_recent_events(user_id, limit=6) if memory_enabled else []
+    memory_digest = get_memory_digest(user_id) if memory_enabled else ''
+    profile = {
+        'id': user.get('id'),
+        'username': user.get('username'),
+        'nickname': user.get('nickname'),
+    }
+
+    if not deepseek_api_key:
+        reply = f'我听见你说“{user_text}”。先由我带你稳稳往前，我们先从照心测试开始，好吗？'
+        next_action = 'start_test'
+        if memory_enabled:
+            append_assistant_event(user_id, stage, user_text, reply, next_action)
+            save_memory(user_id, 'preference', user_text, weight=0.45)
+            rebuild_memory_digest(user_id)
+        return jsonify(
+            {
+                'reply': reply,
+                'next_action': next_action,
+                'action_payload': {},
+                'suggested_route': route_for_action(next_action),
+                'memory_saved': memory_enabled,
+                'privacy_mode': privacy_mode,
+            }
+        )
+
+    prompt_messages = [
+        {'role': 'system', 'content': build_assistant_system_prompt()},
+        {
+            'role': 'user',
+            'content': build_assistant_user_prompt(
+                stage=stage,
+                user_text=user_text,
+                context=context,
+                memories=memories,
+                events=events,
+                profile=profile,
+                memory_digest=memory_digest,
+            ),
+        },
+    ]
+
+    try:
+        output = call_deepseek_by_sdk(
+            api_key=deepseek_api_key,
+            model=DEEPSEEK_MODEL,
+            messages=prompt_messages,
+            max_tokens=420,
+            temperature=0.6,
+        )
+    except RuntimeError as sdk_error:
+        try:
+            output = call_deepseek_by_http(
+                api_key=deepseek_api_key,
+                model=DEEPSEEK_MODEL,
+                messages=prompt_messages,
+                max_tokens=420,
+                temperature=0.6,
+            )
+        except Exception as http_error:
+            return json_error(f'玉灵童子暂时无法回应：SDK={sdk_error}; HTTP={http_error}', 502)
+
+    parsed = extract_json_object(output)
+    reply = str(parsed.get('reply') or '').strip()
+    if not reply:
+        reply = f'我听见你说“{user_text}”。我们继续一步步来，我会一直陪着你。'
+    next_action = normalize_next_action(parsed.get('next_action'))
+    action_payload = parsed.get('action_payload') if isinstance(parsed.get('action_payload'), dict) else {}
+
+    memory_items = parsed.get('memory')
+    memory_saved = False
+    if memory_enabled:
+        if isinstance(memory_items, list):
+            for item in memory_items[:2]:
+                text = str(item or '').strip()
+                if text:
+                    save_memory(user_id, 'preference', text, weight=0.7)
+                    memory_saved = True
+        else:
+            save_memory(user_id, 'preference', user_text, weight=0.5)
+            memory_saved = True
+
+    emotion = str(parsed.get('emotion') or '').strip()
+    if emotion and memory_enabled:
+        save_memory(user_id, 'emotion', emotion, weight=0.65)
+
+    digest = ''
+    if memory_enabled:
+        append_assistant_event(user_id, stage, user_text, reply, next_action)
+        digest = rebuild_memory_digest(user_id)
+    return jsonify(
+        {
+            'reply': reply,
+            'next_action': next_action,
+            'action_payload': action_payload,
+            'suggested_route': route_for_action(next_action),
+            'memory_saved': memory_saved,
+            'emotion': emotion,
+            'memory_digest': digest,
+            'privacy_mode': privacy_mode,
+        }
+    )
+
+
+@app.get('/api/assistant/memories')
+def assistant_memories():
+    auth_result, auth_error = require_auth()
+    if auth_error:
+        return auth_error
+
+    user_id = auth_result['user']['id']
+    memories = fetch_memories(user_id, limit=20)
+    events = fetch_recent_events(user_id, limit=20)
+    digest = get_memory_digest(user_id) or rebuild_memory_digest(user_id)
+    return jsonify({'memories': memories, 'events': events, 'digest': digest})
+
+
+@app.patch('/api/assistant/memories/<int:memory_id>/pin')
+def assistant_pin_memory(memory_id):
+    auth_result, auth_error = require_auth()
+    if auth_error:
+        return auth_error
+
+    data = request.get_json(silent=True) or {}
+    pinned = bool(data.get('pinned', True))
+    user_id = auth_result['user']['id']
+    ok = pin_memory(user_id, memory_id, pinned)
+    if not ok:
+        return json_error('记忆不存在或无权限操作。', 404)
+
+    digest = rebuild_memory_digest(user_id)
+    memories = fetch_memories(user_id, limit=20)
+    return jsonify({'ok': True, 'digest': digest, 'memories': memories})
+
+
+@app.delete('/api/assistant/memories/<int:memory_id>')
+def assistant_delete_memory(memory_id):
+    auth_result, auth_error = require_auth()
+    if auth_error:
+        return auth_error
+
+    user_id = auth_result['user']['id']
+    ok = delete_memory(user_id, memory_id)
+    if not ok:
+        return json_error('记忆不存在或无权限操作。', 404)
+
+    digest = rebuild_memory_digest(user_id)
+    memories = fetch_memories(user_id, limit=20)
+    return jsonify({'ok': True, 'digest': digest, 'memories': memories})
+
+
+@app.get('/api/assistant/memories/export')
+def assistant_export_memories():
+    auth_result, auth_error = require_auth()
+    if auth_error:
+        return auth_error
+
+    user = auth_result['user']
+    user_id = user['id']
+    memories = fetch_memories(user_id, limit=200)
+    events = fetch_recent_events(user_id, limit=100)
+    digest = get_memory_digest(user_id) or rebuild_memory_digest(user_id)
+    payload = {
+        'profile': {
+            'id': user.get('id'),
+            'username': user.get('username'),
+            'nickname': user.get('nickname'),
+        },
+        'digest': digest,
+        'memory_count': len(memories),
+        'event_count': len(events),
+        'memories': memories,
+        'events': events,
+        'exported_at': utc_now_ts(),
+    }
+    return jsonify(payload)
+
+
+@app.delete('/api/assistant/memories')
+def assistant_clear_memories():
+    auth_result, auth_error = require_auth()
+    if auth_error:
+        return auth_error
+
+    user_id = auth_result['user']['id']
+    clear_memories(user_id)
+    return jsonify({'ok': True, 'digest': '', 'memories': []})
+
+
+@app.post('/api/assistant/proactive')
+def assistant_proactive():
+    if not check_rate_limit('assistant-proactive'):
+        return json_error('请求过于频繁，请稍后再试。', 429)
+
+    auth_result, auth_error = require_auth()
+    if auth_error:
+        return auth_error
+
+    data = request.get_json(silent=True) or {}
+    stage = str(data.get('stage', 'idle')).strip() or 'idle'
+    context = data.get('context') if isinstance(data.get('context'), dict) else {}
+    privacy_mode = bool(context.get('privacy_mode', False))
+    memory_enabled = not privacy_mode
+
+    user = auth_result['user']
+    user_id = user['id']
+    deepseek_api_key = (os.getenv('DEEPSEEK_API_KEY') or '').strip()
+    memories = fetch_memories(user_id, limit=8) if memory_enabled else []
+    events = fetch_recent_events(user_id, limit=6) if memory_enabled else []
+    digest = (get_memory_digest(user_id) or rebuild_memory_digest(user_id)) if memory_enabled else ''
+    profile = {
+        'id': user.get('id'),
+        'username': user.get('username'),
+        'nickname': user.get('nickname'),
+    }
+
+    if not deepseek_api_key:
+        reply = '我在这里陪着你。若你愿意，我们聊聊“君子比德于玉”，也可以继续下一步体验。'
+        next_action = 'free_chat'
+        if memory_enabled:
+            append_assistant_event(user_id, stage, '[proactive]', reply, next_action)
+            rebuild_memory_digest(user_id)
+        return jsonify(
+            {
+                'reply': reply,
+                'next_action': next_action,
+                'action_payload': {},
+                'suggested_route': route_for_action(next_action),
+                'privacy_mode': privacy_mode,
+            }
+        )
+
+    prompt_messages = [
+        {'role': 'system', 'content': build_assistant_system_prompt(proactive_mode=True)},
+        {
+            'role': 'user',
+            'content': build_assistant_user_prompt(
+                stage=stage,
+                user_text='[idle_nudge]',
+                context=context,
+                memories=memories,
+                events=events,
+                profile=profile,
+                memory_digest=digest,
+            ),
+        },
+    ]
+
+    try:
+        output = call_deepseek_by_sdk(
+            api_key=deepseek_api_key,
+            model=DEEPSEEK_MODEL,
+            messages=prompt_messages,
+            max_tokens=320,
+            temperature=0.7,
+        )
+    except RuntimeError as sdk_error:
+        try:
+            output = call_deepseek_by_http(
+                api_key=deepseek_api_key,
+                model=DEEPSEEK_MODEL,
+                messages=prompt_messages,
+                max_tokens=320,
+                temperature=0.7,
+            )
+        except Exception as http_error:
+            return json_error(f'主动关怀生成失败：SDK={sdk_error}; HTTP={http_error}', 502)
+
+    parsed = extract_json_object(output)
+    reply = str(parsed.get('reply') or '').strip() or '我在你身边。想继续照心流程，还是先聊聊你今天的心绪？'
+    emotion = str(parsed.get('emotion') or '').strip()
+    next_action = normalize_next_action(parsed.get('next_action'))
+    action_payload = parsed.get('action_payload') if isinstance(parsed.get('action_payload'), dict) else {}
+    if memory_enabled:
+        append_assistant_event(user_id, stage, '[proactive]', reply, next_action)
+    if emotion and memory_enabled:
+        save_memory(user_id, 'emotion', emotion, weight=0.6)
+    digest = rebuild_memory_digest(user_id) if memory_enabled else ''
+
+    return jsonify(
+        {
+            'reply': reply,
+            'next_action': next_action,
+            'action_payload': action_payload,
+            'suggested_route': route_for_action(next_action),
+            'emotion': emotion,
+            'memory_digest': digest,
+            'privacy_mode': privacy_mode,
+        }
+    )
 
 
 @app.post('/api/qwen/image')

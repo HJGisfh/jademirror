@@ -1,12 +1,16 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { useAudioStore } from '@/stores/audioStore'
+import { useAssistantStore } from '@/stores/assistantStore'
 import { useUserStore } from '@/stores/userStore'
 
 const userStore = useUserStore()
 const audioStore = useAudioStore()
+const assistantStore = useAssistantStore()
 
 const works = computed(() => userStore.works)
+const tourActive = computed(() => assistantStore.galleryTourIndex >= 0)
+const autoTour = computed(() => assistantStore.galleryTourAuto)
 const selectedWork = ref(null)
 const pageError = ref('')
 
@@ -53,10 +57,46 @@ async function replayWorkSound(work) {
     pageError.value = error.message || '音效回放失败。'
   }
 }
+
+function startVoiceTour() {
+  assistantStore.guideGalleryTour(works.value)
+}
+
+function nextTourItem() {
+  assistantStore.nextGalleryWork()
+}
+
+function prevTourItem() {
+  assistantStore.prevGalleryWork()
+}
+
+function stopTour() {
+  assistantStore.stopGalleryTour()
+}
+
+function toggleAutoTour() {
+  if (!tourActive.value) {
+    return
+  }
+  if (assistantStore.galleryTourAuto) {
+    assistantStore.pauseAutoGalleryTour()
+  } else {
+    assistantStore.startAutoGalleryTour()
+  }
+}
 </script>
 
 <template>
   <section class="gallery section-grid">
+    <div class="actions-row top-guide">
+      <button type="button" class="jade-button secondary" @click="startVoiceTour">开启展厅语音导览</button>
+      <button type="button" class="jade-button secondary" :disabled="!tourActive" @click="prevTourItem">上一件</button>
+      <button type="button" class="jade-button secondary" :disabled="!tourActive" @click="nextTourItem">下一件</button>
+      <button type="button" class="jade-button secondary" :disabled="!tourActive" @click="toggleAutoTour">
+        {{ autoTour ? '暂停自动' : '自动播放' }}
+      </button>
+      <button type="button" class="jade-button warn" :disabled="!tourActive" @click="stopTour">结束导览</button>
+    </div>
     <p v-if="pageError" class="error-text">{{ pageError }}</p>
 
     <article v-if="!works.length" class="jade-card empty">
@@ -106,6 +146,10 @@ async function replayWorkSound(work) {
   padding: 1rem;
   display: grid;
   gap: 0.6rem;
+}
+
+.top-guide {
+  justify-content: flex-end;
 }
 
 .gallery-grid {

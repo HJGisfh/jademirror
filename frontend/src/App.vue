@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
+import CompanionPanel from '@/components/CompanionPanel.vue'
 import { useAudioStore } from '@/stores/audioStore'
 import { useAuthStore } from '@/stores/authStore'
 
@@ -103,6 +104,8 @@ async function handleAuthAction() {
         <button type="button" class="jade-button primary" @click="showAbout = false">知道了</button>
       </article>
     </div>
+
+    <CompanionPanel />
   </div>
 </template>
 
