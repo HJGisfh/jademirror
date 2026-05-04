@@ -1,6 +1,8 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import CompanionSettings from '@/components/CompanionSettings.vue'
+import SpiritPet from '@/components/SpiritPet.vue'
 import { useAssistantStore } from '@/stores/assistantStore'
 import { useVoiceStore } from '@/stores/voiceStore'
 
@@ -9,7 +11,8 @@ const router = useRouter()
 const assistantStore = useAssistantStore()
 const voiceStore = useVoiceStore()
 const draft = ref('')
-const holdTalking = ref(false)
+const showSettings = ref(false)
+let vadPollId = 0
 
 assistantStore.welcomeIfNeeded()
 assistantStore.setStage(route.name)
@@ -27,30 +30,22 @@ watch(
 const latestMessages = computed(() => assistantStore.messages.slice(-8))
 const memoryPreview = computed(() => assistantStore.filteredMemories.slice(0, 6))
 const memoryCounts = computed(() => assistantStore.memoryTypeCounts)
-const toneLabel = computed(() => {
-  const map = {
-    calm: '平和',
-    comforting: '安抚',
-    cheerful: '轻快',
-    energetic: '振奋',
-    contemplative: '沉静',
-  }
-  return map[assistantStore.emotionalTone] || '平和'
+
+const petState = computed(() => {
+  if (assistantStore.busy) return 'thinking'
+  if (voiceStore.speaking) return 'speaking'
+  if (voiceStore.autoListening || voiceStore.holdListening || voiceStore.listening) return 'listening'
+  return 'idle'
 })
-const personaOptions = [
-  { value: 'default', label: '默认声线' },
-  { value: 'warm', label: '温润声线' },
-  { value: 'bright', label: '清亮声线' },
-  { value: 'deep', label: '低沉声线' },
-]
-const listeningLabel = computed(() => {
-  if (assistantStore.busy) {
-    return '思考中...'
+
+const statusText = computed(() => {
+  if (assistantStore.busy) return '思考中...'
+  if (voiceStore.speaking) return '播报中...'
+  if (voiceStore.autoListening) {
+    return voiceStore.vadSpeechDetected ? '听到你在说话...' : '正在监听...'
   }
-  if (holdTalking.value || voiceStore.holdListening || voiceStore.listening) {
-    return '松开结束'
-  }
-  return '按住说话'
+  if (voiceStore.holdListening || voiceStore.listening) return '聆听中...'
+  return '玉灵童子'
 })
 
 async function sendDraft() {
@@ -63,21 +58,19 @@ async function sendDraft() {
 }
 
 function beginHoldToTalk() {
-  if (assistantStore.busy || holdTalking.value || !voiceStore.recognitionSupported) {
+  if (assistantStore.busy || voiceStore.holdListening || !voiceStore.recognitionSupported) {
     return
   }
-  const started = voiceStore.startHoldListening()
-  if (!started) {
-    return
+  if (voiceStore.autoListening) {
+    voiceStore.stopAutoListen()
   }
-  holdTalking.value = true
+  voiceStore.startHoldListening()
 }
 
 async function endHoldToTalk() {
-  if (!holdTalking.value) {
+  if (!voiceStore.holdListening) {
     return
   }
-  holdTalking.value = false
   const transcript = await voiceStore.stopHoldListening()
   const text = String(transcript || '').trim()
   if (!text) {
@@ -85,6 +78,74 @@ async function endHoldToTalk() {
   }
   await assistantStore.handleUserText(text, router)
 }
+
+function toggleAutoListen() {
+  if (voiceStore.autoListening) {
+    voiceStore.stopAutoListen()
+    return
+  }
+  const started = voiceStore.startAutoListen(assistantStore.silenceThreshold)
+  if (started) {
+    startVADPoll()
+  }
+}
+
+function startVADPoll() {
+  stopVADPoll()
+  vadPollId = window.setInterval(() => {
+    if (!voiceStore.autoListening) {
+      stopVADPoll()
+      return
+    }
+    if (voiceStore.vadSpeechDetected && !voiceStore.autoListenSilenceTimer) {
+      voiceStore.checkAutoListenSilence(assistantStore.silenceThreshold)
+    }
+    if (voiceStore.isAutoListenSilenceTimedOut()) {
+      const text = voiceStore.stopAutoListen()
+      if (text) {
+        assistantStore.handleUserText(text, router)
+      }
+      stopVADPoll()
+      if (assistantStore.autoListen) {
+        setTimeout(() => {
+          if (assistantStore.autoListen && !assistantStore.busy && !voiceStore.speaking) {
+            voiceStore.startAutoListen(assistantStore.silenceThreshold)
+            startVADPoll()
+          }
+        }, 500)
+      }
+    }
+  }, 300)
+}
+
+function stopVADPoll() {
+  if (vadPollId) {
+    window.clearInterval(vadPollId)
+    vadPollId = 0
+  }
+}
+
+watch(() => voiceStore.speaking, (speaking) => {
+  if (!speaking && assistantStore.autoListen && !voiceStore.autoListening && !assistantStore.busy) {
+    setTimeout(() => {
+      if (assistantStore.autoListen && !assistantStore.busy && !voiceStore.speaking) {
+        voiceStore.startAutoListen(assistantStore.silenceThreshold)
+        startVADPoll()
+      }
+    }, 600)
+  }
+})
+
+watch(() => assistantStore.busy, (busy) => {
+  if (!busy && assistantStore.autoListen && !voiceStore.autoListening && !voiceStore.speaking) {
+    setTimeout(() => {
+      if (assistantStore.autoListen && !assistantStore.busy && !voiceStore.speaking) {
+        voiceStore.startAutoListen(assistantStore.silenceThreshold)
+        startVADPoll()
+      }
+    }, 400)
+  }
+})
 
 async function nudgeNow() {
   await assistantStore.triggerIdleNudge(router)
@@ -114,6 +175,14 @@ function handleGlobalActivity() {
   assistantStore.touchActivity(router)
 }
 
+function openSettings() {
+  showSettings.value = true
+}
+
+function closeSettings() {
+  showSettings.value = false
+}
+
 onMounted(() => {
   window.addEventListener('pointerdown', handleGlobalActivity, true)
   window.addEventListener('keydown', handleGlobalActivity, true)
@@ -122,7 +191,8 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener('pointerdown', handleGlobalActivity, true)
   window.removeEventListener('keydown', handleGlobalActivity, true)
-  holdTalking.value = false
+  voiceStore.stopAutoListen()
+  stopVADPoll()
   voiceStore.stopListening()
   assistantStore.teardown()
 })
@@ -130,15 +200,34 @@ onBeforeUnmount(() => {
 
 <template>
   <aside class="companion" :class="{ folded: !assistantStore.open }">
+    <div class="pet-dock" @click="openSettings">
+      <SpiritPet :state="petState" :size="56" />
+      <span class="pet-status">{{ statusText }}</span>
+    </div>
+
     <button type="button" class="fold-btn" @click="assistantStore.open = !assistantStore.open">
-      {{ assistantStore.open ? '收起玉灵童子' : '展开玉灵童子' }}
+      {{ assistantStore.open ? '收起' : '展开' }}
     </button>
 
     <div v-if="assistantStore.open" class="panel">
       <header class="head">
         <p class="title">玉灵童子</p>
-        <span class="stage">阶段：{{ assistantStore.stage }} · 语气：{{ toneLabel }}</span>
+        <button type="button" class="settings-btn" @click="openSettings">设置</button>
       </header>
+
+      <div class="pet-bar">
+        <SpiritPet :state="petState" :size="40" />
+        <span class="pet-bar-status">{{ statusText }}</span>
+        <button
+          type="button"
+          class="jade-button secondary auto-listen-btn"
+          :class="{ active: voiceStore.autoListening }"
+          :disabled="!voiceStore.recognitionSupported || assistantStore.busy"
+          @click="toggleAutoListen"
+        >
+          {{ voiceStore.autoListening ? '停止监听' : '自动监听' }}
+        </button>
+      </div>
 
       <div class="messages">
         <p v-for="item in latestMessages" :key="item.id" :class="['line', item.role]">
@@ -150,17 +239,17 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="jade-button secondary"
-          :class="{ hold: holdTalking || voiceStore.holdListening }"
-          :disabled="assistantStore.busy || !voiceStore.recognitionSupported"
+          :class="{ hold: voiceStore.holdListening }"
+          :disabled="assistantStore.busy || !voiceStore.recognitionSupported || voiceStore.autoListening"
           @pointerdown.prevent="beginHoldToTalk"
           @pointerup.prevent="endHoldToTalk"
           @pointerleave.prevent="endHoldToTalk"
           @pointercancel.prevent="endHoldToTalk"
         >
-          {{ listeningLabel }}
+          {{ voiceStore.holdListening ? '松开结束' : '按住说话' }}
         </button>
         <button type="button" class="jade-button secondary" :disabled="assistantStore.busy" @click="nudgeNow">
-          主动关怀一下
+          主动关怀
         </button>
       </div>
 
@@ -168,7 +257,7 @@ onBeforeUnmount(() => {
         <textarea
           v-model="draft"
           rows="2"
-          placeholder="直接说：带我开始测试 / 去展厅 / 继续聊天..."
+          placeholder="直接说：带我开始测试 / 去藏室 / 继续聊天..."
           @keydown.enter.exact.prevent="sendDraft"
         ></textarea>
         <button type="button" class="jade-button primary" :disabled="assistantStore.busy" @click="sendDraft">
@@ -176,28 +265,6 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
-      <label class="switch">
-        <input v-model="assistantStore.autoGuide" type="checkbox" />
-        自动跳转到下一步
-      </label>
-      <label class="switch">
-        <input :checked="assistantStore.privacyMode" type="checkbox" @change="assistantStore.setPrivacyMode($event.target.checked)" />
-        隐私模式（不保存记忆）
-      </label>
-      <label class="switch">
-        <input v-model="assistantStore.autoSpeak" type="checkbox" />
-        自动语音播报
-      </label>
-      <label class="switch">
-        <input v-model="assistantStore.idleEnabled" type="checkbox" @change="assistantStore.touchActivity(router)" />
-        空闲时主动闲聊
-      </label>
-      <div class="persona-row">
-        <span class="persona-label">声线角色</span>
-        <select class="persona-select" :value="assistantStore.voicePersona" @change="assistantStore.setVoicePersona($event.target.value)">
-          <option v-for="item in personaOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
-        </select>
-      </div>
       <div class="memory-head">
         <p class="memory-title">长期记忆</p>
         <div class="memory-head-actions">
@@ -240,6 +307,8 @@ onBeforeUnmount(() => {
 
       <p v-if="assistantStore.lastError" class="error-text">{{ assistantStore.lastError }}</p>
     </div>
+
+    <CompanionSettings v-if="showSettings" @close="closeSettings" />
   </aside>
 </template>
 
@@ -250,20 +319,53 @@ onBeforeUnmount(() => {
   bottom: 1rem;
   z-index: 40;
   width: min(420px, calc(100vw - 1.5rem));
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.4rem;
+}
+
+.pet-dock {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.8rem;
+  border-radius: 999px;
+  background: rgba(247, 252, 248, 0.95);
+  border: 1px solid rgba(56, 90, 77, 0.2);
+  box-shadow: 0 6px 18px rgba(34, 69, 56, 0.12);
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.pet-dock:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 24px rgba(34, 69, 56, 0.18);
+}
+
+.pet-status {
+  font-size: 0.82rem;
+  color: var(--ink-600);
+  white-space: nowrap;
 }
 
 .fold-btn {
-  width: 100%;
-  border: 1px solid rgba(56, 90, 77, 0.25);
-  background: rgba(247, 252, 248, 0.95);
-  color: var(--ink-700);
-  border-radius: 10px;
-  padding: 0.55rem 0.8rem;
+  border: 1px solid rgba(56, 90, 77, 0.2);
+  background: rgba(247, 252, 248, 0.9);
+  color: var(--ink-600);
+  border-radius: 999px;
+  padding: 0.3rem 0.7rem;
+  font-size: 0.78rem;
   cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.fold-btn:hover {
+  background: rgba(220, 234, 225, 0.9);
 }
 
 .panel {
-  margin-top: 0.45rem;
+  width: 100%;
   border-radius: 14px;
   border: 1px solid rgba(57, 96, 82, 0.24);
   background: rgba(252, 254, 253, 0.97);
@@ -284,9 +386,46 @@ onBeforeUnmount(() => {
   font-weight: 700;
 }
 
-.stage {
-  font-size: 0.76rem;
-  color: var(--ink-500);
+.settings-btn {
+  border: 1px solid rgba(56, 90, 77, 0.2);
+  background: rgba(248, 252, 249, 0.9);
+  color: var(--ink-600);
+  border-radius: 999px;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.settings-btn:hover {
+  background: rgba(220, 234, 225, 0.9);
+}
+
+.pet-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  border-radius: var(--radius-md);
+  background: rgba(239, 247, 242, 0.5);
+  border: 1px solid rgba(58, 91, 79, 0.1);
+}
+
+.pet-bar-status {
+  flex: 1;
+  font-size: 0.82rem;
+  color: var(--ink-600);
+}
+
+.auto-listen-btn {
+  font-size: 0.78rem;
+  padding: 0.25rem 0.6rem;
+}
+
+.auto-listen-btn.active {
+  background: rgba(45, 89, 75, 0.9);
+  color: #eef6f2;
+  border-color: transparent;
 }
 
 .messages {
@@ -337,37 +476,6 @@ onBeforeUnmount(() => {
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.93);
   padding: 0.55rem 0.65rem;
-}
-
-.switch {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  font-size: 0.82rem;
-  color: var(--ink-600);
-}
-
-.switch input {
-  accent-color: #2f6757;
-}
-
-.persona-row {
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-}
-
-.persona-label {
-  font-size: 0.82rem;
-  color: var(--ink-600);
-}
-
-.persona-select {
-  border: 1px solid rgba(56, 90, 77, 0.24);
-  border-radius: 8px;
-  padding: 0.22rem 0.42rem;
-  background: rgba(255, 255, 255, 0.94);
-  color: var(--ink-700);
 }
 
 .error-text {

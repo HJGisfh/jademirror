@@ -70,6 +70,10 @@ export const useVoiceStore = defineStore('voice', {
     initialized: false,
     holdListening: false,
     persona: 'default',
+    autoListening: false,
+    autoListenSilenceTimer: 0,
+    autoListenAccumulated: '',
+    vadSpeechDetected: false,
   }),
   actions: {
     init() {
@@ -84,8 +88,9 @@ export const useVoiceStore = defineStore('voice', {
       if (support.RecognitionCtor) {
         this.recognition = new support.RecognitionCtor()
         this.recognition.lang = RECOGNITION_LANG
-        this.recognition.interimResults = false
+        this.recognition.interimResults = true
         this.recognition.maxAlternatives = 1
+        this.recognition.continuous = true
 
         this.recognition.onstart = () => {
           this.listening = true
@@ -102,10 +107,18 @@ export const useVoiceStore = defineStore('voice', {
             holdSessionResolve = null
             holdSessionPromise = null
           }
+          if (this.autoListening) {
+            this.restartAutoListen()
+          }
         }
 
         this.recognition.onerror = (event) => {
-          this.lastError = this.mapRecognitionError(event?.error)
+          const errorCode = event?.error
+          if (errorCode === 'no-speech' && this.autoListening) {
+            this.restartAutoListen()
+            return
+          }
+          this.lastError = this.mapRecognitionError(errorCode)
           this.listening = false
           this.recognizing = false
           this.holdListening = false
@@ -114,11 +127,39 @@ export const useVoiceStore = defineStore('voice', {
             holdSessionResolve = null
             holdSessionPromise = null
           }
+          if (this.autoListening && errorCode !== 'not-allowed' && errorCode !== 'audio-capture') {
+            this.restartAutoListen()
+          }
         }
 
         this.recognition.onresult = (event) => {
-          const transcript = event?.results?.[0]?.[0]?.transcript || ''
-          this.lastTranscript = transcript.trim()
+          let finalTranscript = ''
+          let interimTranscript = ''
+
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            const result = event.results[i]
+            const text = result[0]?.transcript || ''
+            if (result.isFinal) {
+              finalTranscript += text
+            } else {
+              interimTranscript += text
+            }
+          }
+
+          if (finalTranscript) {
+            this.lastTranscript = finalTranscript.trim()
+            this.autoListenAccumulated += finalTranscript
+          }
+
+          if (interimTranscript && this.autoListening) {
+            this.vadSpeechDetected = true
+            this.resetAutoListenSilenceTimer()
+          }
+
+          if (finalTranscript && this.autoListening) {
+            this.vadSpeechDetected = true
+            this.resetAutoListenSilenceTimer()
+          }
         }
       }
 
@@ -144,6 +185,11 @@ export const useVoiceStore = defineStore('voice', {
       this.lastError = ''
       this.lastTranscript = ''
 
+      const savedInterim = this.recognition.interimResults
+      const savedContinuous = this.recognition.continuous
+      this.recognition.interimResults = false
+      this.recognition.continuous = false
+
       return new Promise((resolve) => {
         let settled = false
         const baseOnEnd = this.recognition.onend
@@ -162,6 +208,8 @@ export const useVoiceStore = defineStore('voice', {
           this.recognition.onend = baseOnEnd
           this.recognition.onerror = baseOnError
           this.recognition.onresult = baseOnResult
+          this.recognition.interimResults = savedInterim
+          this.recognition.continuous = savedContinuous
         }
 
         const finalize = (value) => {
@@ -316,6 +364,72 @@ export const useVoiceStore = defineStore('voice', {
       }
 
       window.speechSynthesis.speak(utter)
+    },
+    startAutoListen(silenceThreshold = 1500) {
+      this.init()
+      if (!this.recognitionSupported || !this.recognition) {
+        this.lastError = '当前浏览器不支持语音识别，无法开启自动监听。'
+        return false
+      }
+
+      if (this.autoListening) {
+        return true
+      }
+
+      this.autoListening = true
+      this.autoListenAccumulated = ''
+      this.vadSpeechDetected = false
+      this.lastError = ''
+
+      try {
+        this.recognition.start()
+        return true
+      } catch {
+        this.autoListening = false
+        this.lastError = '自动监听启动失败，请稍后重试。'
+        return false
+      }
+    },
+    stopAutoListen() {
+      this.autoListening = false
+      this.clearAutoListenSilenceTimer()
+      this.stopListening()
+      const result = this.autoListenAccumulated.trim()
+      this.autoListenAccumulated = ''
+      this.vadSpeechDetected = false
+      return result
+    },
+    resetAutoListenSilenceTimer() {
+      this.clearAutoListenSilenceTimer()
+    },
+    clearAutoListenSilenceTimer() {
+      if (this.autoListenSilenceTimer) {
+        window.clearTimeout(this.autoListenSilenceTimer)
+        this.autoListenSilenceTimer = 0
+      }
+    },
+    restartAutoListen() {
+      if (!this.autoListening) return
+      this.clearAutoListenSilenceTimer()
+      try {
+        if (!this.recognizing) {
+          this.recognition.start()
+        }
+      } catch {
+        // ignore restart race
+      }
+    },
+    checkAutoListenSilence(silenceThreshold = 1500) {
+      if (!this.autoListening) return
+      this.clearAutoListenSilenceTimer()
+      if (this.vadSpeechDetected) {
+        this.autoListenSilenceTimer = window.setTimeout(() => {
+          this.autoListenSilenceTimer = 0
+        }, silenceThreshold)
+      }
+    },
+    isAutoListenSilenceTimedOut() {
+      return this.autoListening && this.vadSpeechDetected && !this.autoListenSilenceTimer && this.autoListenAccumulated.trim().length > 0
     },
   },
 })

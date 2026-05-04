@@ -1,119 +1,214 @@
-const DIMENSION_RULES = [
-  { key: 'landscape', weight: 3.2, label: '山水气韵' },
-  { key: 'color', weight: 3, label: '玉色偏好' },
-  { key: 'symbol', weight: 3.2, label: '纹样意象' },
-  { key: 'mood', weight: 1.4, label: '心境倾向' },
-  { key: 'texture', weight: 1.2, label: '质地喜好' },
-]
+import { VECTOR_KEYS, MBTI_DIMS, BIG5_DIMS, ARCHETYPE_DIMS, createZeroVector } from '@/data/questions'
+import { jadeProfiles, getJadeProfile } from '@/data/jadeProfiles'
 
-const RELATED_TRAITS = {
-  landscape: {
-    山: ['竹'],
-    水: ['云'],
-    竹: ['山'],
-    云: ['水'],
-  },
-  color: {
-    青: ['白'],
-    白: ['青'],
-    赤: ['黄'],
-    黄: ['赤'],
-  },
-  symbol: {
-    龙: ['璧'],
-    凤: ['蝉'],
-    蝉: ['凤'],
-    璧: ['龙'],
-  },
-  mood: {
-    静: ['雅'],
-    雅: ['静'],
-    烈: ['灵'],
-    灵: ['烈'],
-  },
-  texture: {
-    润: ['素'],
-    透: ['雕'],
-    雕: ['透'],
-    素: ['润'],
-  },
+function addVectors(base, delta) {
+  const result = { ...base }
+  for (const key of Object.keys(delta)) {
+    result[key] = (result[key] || 0) + delta[key]
+  }
+  return result
 }
 
-function scoreOneDimension({ key, weight, userValue, jadeValue }) {
-  if (!userValue || !jadeValue) {
+function cosineSimilarity(a, b) {
+  let dotProduct = 0
+  let normA = 0
+  let normB = 0
+
+  for (const key of VECTOR_KEYS) {
+    const va = a[key] || 0
+    const vb = b[key] || 0
+    dotProduct += va * vb
+    normA += va * va
+    normB += vb * vb
+  }
+
+  if (normA === 0 || normB === 0) {
     return 0
   }
 
-  if (userValue === jadeValue) {
-    return weight
-  }
-
-  const relatedList = RELATED_TRAITS[key]?.[userValue] || []
-  if (relatedList.includes(jadeValue)) {
-    return weight * 0.45
-  }
-
-  return 0
+  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB))
 }
 
-function buildReason(answers, jade, details) {
-  const top = [...details].sort((a, b) => b.score - a.score)[0]
-  if (!top) {
-    return `你与${jade.name}的整体气质接近，呈现出稳定的心性共鸣。`
+export function computeUserVector(questions, answers) {
+  let vector = createZeroVector()
+
+  for (const question of questions) {
+    const answerValue = answers[question.id]
+    if (!answerValue) continue
+
+    const option = question.options.find((o) => o.value === answerValue)
+    if (!option || !option.vector) continue
+
+    vector = addVectors(vector, option.vector)
   }
 
-  const answer = answers[top.key]
-
-  const reasonMap = {
-    landscape: `你选择“${answer}”意象，与这件玉器的山水气韵同频，呈现出相近的精神节奏。`,
-    color: `你偏好的“${answer}”色调，与该玉器的主色倾向高度一致，映照出温润而明确的审美取向。`,
-    symbol: `你对“${answer}”纹样有明显偏好，与这件玉器的核心象征契合，因此匹配度最高。`,
-    mood: `你当前追求“${answer}”心境，而这件玉器的人格特征恰好能承接这种心理状态。`,
-    texture: `你偏好的“${answer}”触感，与此玉器的材质想象一致，形成了细腻的感官共鸣。`,
-  }
-
-  return reasonMap[top.key]
+  return vector
 }
 
-export function matchJadeByAnswers({ jades, answers }) {
+export function deriveMbtiType(vector) {
+  const letters = [
+    vector.EI >= 0 ? 'E' : 'I',
+    vector.SN >= 0 ? 'S' : 'N',
+    vector.TF >= 0 ? 'T' : 'F',
+    vector.JP >= 0 ? 'J' : 'P',
+  ]
+  return letters.join('')
+}
+
+function getDominantArchetype(vector) {
+  let best = 'Sage'
+  let bestVal = -Infinity
+  for (const key of ARCHETYPE_DIMS) {
+    const val = vector[key] || 0
+    if (val > bestVal) {
+      bestVal = val
+      best = key
+    }
+  }
+  const labelMap = {
+    Warrior: '战士',
+    Sage: '智者',
+    Explorer: '探索者',
+    Mediator: '调停者',
+    Creator: '创造者',
+    Ruler: '统治者',
+    Healer: '治愈者',
+  }
+  return { key: best, label: labelMap[best] || best, score: bestVal }
+}
+
+function computeDimensionScores(vector) {
+  const mbti = {}
+  for (const key of MBTI_DIMS) {
+    const val = vector[key] || 0
+    const absVal = Math.abs(val)
+    const maxPossible = 8
+    const percent = Math.min(100, Math.round((absVal / maxPossible) * 100))
+    const labels = {
+      EI: val >= 0 ? 'E' : 'I',
+      SN: val >= 0 ? 'S' : 'N',
+      TF: val >= 0 ? 'T' : 'F',
+      JP: val >= 0 ? 'J' : 'P',
+    }
+    mbti[key] = { value: val, percent, dominant: labels[key] }
+  }
+
+  const big5 = {}
+  for (const key of BIG5_DIMS) {
+    const val = vector[key] || 0
+    const maxPossible = 8
+    const normalized = (val + maxPossible) / (2 * maxPossible)
+    const percent = Math.min(100, Math.max(0, Math.round(normalized * 100)))
+    big5[key] = { value: val, percent }
+  }
+
+  const archetypes = {}
+  for (const key of ARCHETYPE_DIMS) {
+    const val = vector[key] || 0
+    const maxPossible = 8
+    const percent = Math.min(100, Math.max(0, Math.round((val / maxPossible) * 100)))
+    archetypes[key] = { value: val, percent }
+  }
+
+  return { mbti, big5, archetypes }
+}
+
+function deriveFlowchartPath(questions, answers, vector, profile) {
+  const steps = []
+  const moduleAnswers = {}
+
+  for (const question of questions) {
+    const answerValue = answers[question.id]
+    if (!answerValue) continue
+    const option = question.options.find((o) => o.value === answerValue)
+    if (!option) continue
+
+    if (!moduleAnswers[question.module]) {
+      moduleAnswers[question.module] = []
+    }
+    moduleAnswers[question.module].push({
+      questionId: question.id,
+      label: option.label,
+      moduleTitle: question.moduleTitle,
+    })
+  }
+
+  for (const [moduleKey, items] of Object.entries(moduleAnswers)) {
+    steps.push({
+      type: 'module',
+      moduleKey,
+      moduleTitle: items[0]?.moduleTitle || moduleKey,
+      choices: items.map((i) => i.label),
+    })
+  }
+
+  const mbtiType = deriveMbtiType(vector)
+  steps.push({
+    type: 'mbti',
+    label: mbtiType,
+  })
+
+  const archetype = getDominantArchetype(vector)
+  steps.push({
+    type: 'archetype',
+    label: archetype.label,
+  })
+
+  steps.push({
+    type: 'jade',
+    label: profile ? `${profile.archetypeLabel}` : '古玉',
+  })
+
+  return steps
+}
+
+export function matchJadeByVector({ jades, userVector }) {
   if (!Array.isArray(jades) || jades.length === 0) {
     throw new Error('玉器库为空，无法执行匹配。')
   }
 
-  const totalWeight = DIMENSION_RULES.reduce((acc, rule) => acc + rule.weight, 0)
-
-  let best = null
+  const scores = []
 
   for (const jade of jades) {
-    const details = DIMENSION_RULES.map((rule) => {
-      return {
-        key: rule.key,
-        label: rule.label,
-        score: scoreOneDimension({
-          key: rule.key,
-          weight: rule.weight,
-          userValue: answers[rule.key],
-          jadeValue: jade.traits?.[rule.key],
-        }),
-      }
-    })
+    const profile = getJadeProfile(jade.id)
+    if (!profile) continue
 
-    const scoreRaw = details.reduce((acc, item) => acc + item.score, 0)
-    const scoreNormalized = scoreRaw / totalWeight
-
-    if (!best || scoreNormalized > best.score) {
-      best = {
-        jade,
-        score: scoreNormalized,
-        details,
-      }
-    }
+    const similarity = cosineSimilarity(userVector, profile.vector)
+    scores.push({ jade, profile, similarity })
   }
+
+  scores.sort((a, b) => b.similarity - a.similarity)
+
+  const best = scores[0]
+  if (!best) {
+    throw new Error('未找到匹配的玉器。')
+  }
+
+  const worst = scores[scores.length - 1]
+
+  const mbtiType = deriveMbtiType(userVector)
+  const archetype = getDominantArchetype(userVector)
+  const dimensionScores = computeDimensionScores(userVector)
 
   return {
     jade: best.jade,
-    score: Number(best.score.toFixed(4)),
-    reason: buildReason(answers, best.jade, best.details),
-    details: best.details,
+    profile: best.profile,
+    score: best.similarity,
+    mbtiType,
+    archetype,
+    dimensionScores,
+    shadowJade: worst.jade,
+    shadowProfile: worst.profile,
+    allScores: scores.map((s) => ({
+      jadeId: s.jade.id,
+      jadeName: s.jade.name,
+      similarity: s.similarity,
+    })),
   }
 }
+
+export function matchJadeByAnswers({ jades, answers }) {
+  throw new Error('请使用 matchJadeByVector 进行向量匹配。')
+}
+
+export { computeDimensionScores, getDominantArchetype, deriveFlowchartPath, cosineSimilarity }

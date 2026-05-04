@@ -54,6 +54,17 @@ const dynastyStyleMap = {
   南朝: '南朝风格，柔雅流动，线条圆融',
 }
 
+const mbtiStyleMap = {
+  E: '外向明朗，线条舒展，光影对比鲜明',
+  I: '内敛沉静，细节含蓄，氛围幽深',
+  S: '质感写实，纹理精细，触感可及',
+  N: '意境深远，留白丰富，想象空间大',
+  T: '结构严谨，线条利落，逻辑感强',
+  F: '情感柔和，曲线优美，温度感明显',
+  J: '秩序分明，比例精确，构图对称',
+  P: '自由流动，不拘一格，节奏灵动',
+}
+
 function buildCraftText(jade) {
   const name = jade?.name || ''
   if (name.includes('璧')) {
@@ -71,26 +82,79 @@ function buildCraftText(jade) {
   return '遵循古玉工艺，阴刻线与浅浮雕结合，保留包浆与岁月痕迹'
 }
 
+function deriveTraitFromVector(vector, key) {
+  if (!vector) return null
+  const map = {
+    color: () => {
+      if (vector.TF > 0 && vector.EI > 0) return '赤'
+      if (vector.TF < 0) return '白'
+      if (vector.Openness > 0) return '青'
+      return '黄'
+    },
+    symbol: () => {
+      if (vector.Warrior > 0 || vector.Ruler > 1) return '龙'
+      if (vector.Healer > 0 || vector.Mediator > 1) return '凤'
+      if (vector.Sage > 1) return '蝉'
+      return '璧'
+    },
+    landscape: () => {
+      if (vector.EI > 0 && vector.JP > 0) return '山'
+      if (vector.Agreeableness > 0) return '水'
+      if (vector.EI < 0) return '竹'
+      return '云'
+    },
+    mood: () => {
+      if (vector.Neuroticism < 0 && vector.JP > 0) return '静'
+      if (vector.Openness > 0 && vector.TF < 0) return '雅'
+      if (vector.Warrior > 0 || vector.TF > 1) return '烈'
+      return '灵'
+    },
+    texture: () => {
+      if (vector.Agreeableness > 0) return '润'
+      if (vector.Openness > 0 && vector.SN < 0) return '透'
+      if (vector.JP > 0 && vector.Warrior > 0) return '雕'
+      return '素'
+    },
+  }
+  const fn = map[key]
+  return fn ? fn() : null
+}
+
 function sanitizeText(value, fallback) {
   const v = String(value || '').trim()
   return v || fallback
 }
 
-export function buildImagePrompt({ answers, jade, emotion }) {
+export function buildImagePrompt({ answers, jade, emotion, vector }) {
   const dynasty = sanitizeText(jade?.dynasty, '古代')
   const name = sanitizeText(jade?.name, '古玉')
   const description = sanitizeText(jade?.description, '古玉器物，温润雅正')
 
-  const color = colorMap[answers.color] || '青白玉色，温润含光'
-  const symbol = symbolMap[answers.symbol] || '古玉纹饰，层次分明'
-  const landscape = landscapeMap[answers.landscape] || '东方山水肌理'
-  const mood = moodMap[answers.mood] || '温润内敛'
-  const texture = textureMap[answers.texture] || '细腻温润'
+  const colorKey = answers?.color || deriveTraitFromVector(vector, 'color') || '青'
+  const symbolKey = answers?.symbol || deriveTraitFromVector(vector, 'symbol') || '璧'
+  const landscapeKey = answers?.landscape || deriveTraitFromVector(vector, 'landscape') || '云'
+  const moodKey = answers?.mood || deriveTraitFromVector(vector, 'mood') || '静'
+  const textureKey = answers?.texture || deriveTraitFromVector(vector, 'texture') || '润'
+
+  const color = colorMap[colorKey] || '青白玉色，温润含光'
+  const symbol = symbolMap[symbolKey] || '古玉纹饰，层次分明'
+  const landscape = landscapeMap[landscapeKey] || '东方山水肌理'
+  const mood = moodMap[moodKey] || '温润内敛'
+  const texture = textureMap[textureKey] || '细腻温润'
   const emotionText = emotionMap[emotion] || emotionMap.neutral
   const dynastyStyle = dynastyStyleMap[dynasty] || `${dynasty}代审美，古雅庄重`
   const craftText = buildCraftText(jade)
 
-  return [
+  const mbtiStyleParts = []
+  if (vector) {
+    mbtiStyleParts.push(mbtiStyleMap[vector.EI >= 0 ? 'E' : 'I'])
+    mbtiStyleParts.push(mbtiStyleMap[vector.SN >= 0 ? 'S' : 'N'])
+    mbtiStyleParts.push(mbtiStyleMap[vector.TF >= 0 ? 'T' : 'F'])
+    mbtiStyleParts.push(mbtiStyleMap[vector.JP >= 0 ? 'J' : 'P'])
+  }
+  const mbtiStyle = mbtiStyleParts.length ? mbtiStyleParts.join('，') : ''
+
+  const parts = [
     `${dynasty}${name}`,
     description,
     dynastyStyle,
@@ -101,8 +165,39 @@ export function buildImagePrompt({ answers, jade, emotion }) {
     mood,
     emotionText,
     craftText,
+  ]
+
+  if (mbtiStyle) {
+    parts.push(mbtiStyle)
+  }
+
+  parts.push(
     '中国古玉，博物馆级陈列摄影风格，超高细节，8k，微距质感，柔和体积光',
     '背景简洁留白，主体居中，材质真实，玉石半透明，边缘高光克制',
     '无现代金属配件，无文字水印，无英文字符，无塑料感，无卡通风格',
-  ].join('，')
+  )
+
+  return parts.join('，')
+}
+
+const viewAngleMap = {
+  front: '正面平视角度，居中构图',
+  left: '左侧45度视角，微侧转展示左面细节',
+  right: '右侧45度视角，微侧转展示右面细节',
+  back: '背面视角，展示背面纹理与工艺',
+  top: '俯视角度，展示顶部弧面与边缘',
+  left_front: '左前45度俯视，同时展示正面与左侧',
+  right_front: '右前45度俯视，同时展示正面与右侧',
+  bottom: '仰视角度，展示底部细节',
+}
+
+export function buildMultiViewPrompts({ answers, jade, emotion, vector }) {
+  const basePrompt = buildImagePrompt({ answers, jade, emotion, vector })
+  const views = Object.entries(viewAngleMap).map(([key, angleDesc]) => {
+    return {
+      key,
+      prompt: `${basePrompt}，${angleDesc}，同一器物不同视角，风格一致`,
+    }
+  })
+  return views
 }

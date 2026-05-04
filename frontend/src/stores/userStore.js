@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { createZeroVector } from '@/data/questions'
 
 const WORK_STORAGE_KEY = 'jademirror-works-v1'
 
@@ -20,50 +21,88 @@ function createWorkId() {
 
 export const useUserStore = defineStore('user', {
   state: () => ({
-    testAnswers: {
-      landscape: '',
-      color: '',
-      symbol: '',
-      mood: '',
-      texture: '',
-    },
+    testMode: '',
+    testAnswers: {},
+    userVector: createZeroVector(),
     matchedJade: null,
+    matchProfile: null,
     matchReason: '',
     matchScore: 0,
+    mbtiType: '',
+    archetype: null,
+    dimensionScores: null,
+    shadowJade: null,
+    shadowProfile: null,
+    flowchartPath: [],
     currentEmotion: 'neutral',
     generatedImageDataUrl: '',
+    generatedImageOriginalUrl: '',
+    generatedModelUrl: '',
+    generatedMultiViews: [],
     lastPrompt: '',
     works: readWorks(),
   }),
   getters: {
     hasRequiredAnswers: (state) => {
-      return ['landscape', 'color', 'symbol'].every((key) => !!state.testAnswers[key])
+      return Object.keys(state.testAnswers).length > 0
     },
   },
   actions: {
-    setAnswer(dimension, value) {
-      this.testAnswers[dimension] = value
+    setTestMode(mode) {
+      this.testMode = mode
+    },
+    setAnswer(questionId, value) {
+      this.testAnswers[questionId] = value
     },
     setAllAnswers(payload) {
-      this.testAnswers = {
-        ...this.testAnswers,
-        ...payload,
-      }
+      this.testAnswers = { ...payload }
     },
-    setMatchResult({ jade, reason, score }) {
+    setUserVector(vector) {
+      this.userVector = { ...vector }
+    },
+    setMatchResult({
+      jade,
+      profile,
+      reason,
+      score,
+      mbtiType,
+      archetype,
+      dimensionScores,
+      shadowJade,
+      shadowProfile,
+      flowchartPath,
+    }) {
       this.matchedJade = jade
+      this.matchProfile = profile
       this.matchReason = reason
       this.matchScore = score
+      this.mbtiType = mbtiType
+      this.archetype = archetype
+      this.dimensionScores = dimensionScores
+      this.shadowJade = shadowJade
+      this.shadowProfile = shadowProfile
+      this.flowchartPath = flowchartPath || []
     },
     setEmotion(emotion) {
       this.currentEmotion = emotion || 'neutral'
     },
-    setGeneratedResult({ imageDataUrl, prompt }) {
+    setGeneratedResult({ imageDataUrl, prompt, modelUrl, originalUrl }) {
       this.generatedImageDataUrl = imageDataUrl || ''
       this.lastPrompt = prompt || ''
+      if (modelUrl !== undefined) this.generatedModelUrl = modelUrl
+      if (originalUrl !== undefined) this.generatedImageOriginalUrl = originalUrl
+    },
+    setGeneratedModelUrl(url) {
+      this.generatedModelUrl = url || ''
+    },
+    setMultiViews(views) {
+      this.generatedMultiViews = views || []
     },
     clearGeneratedResult() {
       this.generatedImageDataUrl = ''
+      this.generatedImageOriginalUrl = ''
+      this.generatedModelUrl = ''
+      this.generatedMultiViews = []
       this.lastPrompt = ''
     },
     persistWorks() {
@@ -79,6 +118,9 @@ export const useUserStore = defineStore('user', {
         imageDataURL: this.generatedImageDataUrl,
         jadeName: this.matchedJade.name,
         jadeDynasty: this.matchedJade.dynasty,
+        jadeDescription: this.matchedJade.description || '',
+        jadePersonality: this.matchedJade.personality || '',
+        jadeTraits: this.matchedJade.traits || {},
         prompt: this.lastPrompt,
         date: new Date().toISOString(),
         emotion: this.currentEmotion,
@@ -94,16 +136,19 @@ export const useUserStore = defineStore('user', {
       this.persistWorks()
     },
     resetTest() {
-      this.testAnswers = {
-        landscape: '',
-        color: '',
-        symbol: '',
-        mood: '',
-        texture: '',
-      }
+      this.testMode = ''
+      this.testAnswers = {}
+      this.userVector = createZeroVector()
       this.matchedJade = null
+      this.matchProfile = null
       this.matchReason = ''
       this.matchScore = 0
+      this.mbtiType = ''
+      this.archetype = null
+      this.dimensionScores = null
+      this.shadowJade = null
+      this.shadowProfile = null
+      this.flowchartPath = []
       this.currentEmotion = 'neutral'
       this.clearGeneratedResult()
     },

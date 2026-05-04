@@ -10,6 +10,11 @@ export async function requestQwenImage(payload) {
   return data
 }
 
+export async function request3DGeneration(payload) {
+  const { data } = await http.post('/3d/generate', payload, { timeout: 600000 })
+  return data
+}
+
 export async function requestAssistantTurn(payload) {
   const { data } = await http.post('/assistant/turn', payload)
   return data

@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import secrets
@@ -9,7 +10,7 @@ from urllib.parse import quote
 
 import requests
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -34,6 +35,24 @@ QWEN_MODEL = os.getenv('QWEN_MODEL', 'qwen-image-2.0')
 REQUEST_TIMEOUT = float(os.getenv('REQUEST_TIMEOUT', '45'))
 REQUEST_MAX_RETRIES = int(os.getenv('REQUEST_MAX_RETRIES', '2'))
 RATE_LIMIT_PER_MINUTE = int(os.getenv('RATE_LIMIT_PER_MINUTE', '40'))
+HUNYUAN3D_API_URL = os.getenv('HUNYUAN3D_API_URL', '').rstrip('/')
+HUNYUAN3D_ENABLE_TEXTURE = os.getenv('HUNYUAN3D_ENABLE_TEXTURE', '0') == '1'
+HUNYUAN3D_OCTREE_RESOLUTION = int(os.getenv('HUNYUAN3D_OCTREE_RESOLUTION', '128'))
+HUNYUAN3D_INFERENCE_STEPS = int(os.getenv('HUNYUAN3D_INFERENCE_STEPS', '5'))
+REPLICATE_API_TOKEN = (os.getenv('REPLICATE_API_TOKEN') or '').strip()
+REPLICATE_MODEL_VERSION = os.getenv(
+    'REPLICATE_MODEL_VERSION',
+    'b1b9449a1277e10402781c5d41eb30c0a0683504fb23fab591ca9dfc2aabe1cb',
+)
+TC_3D_API_KEY = (os.getenv('TC_3D_API_KEY') or '').strip()
+TC_3D_BASE_URL = os.getenv('TC_3D_BASE_URL', 'https://api.ai3d.cloud.tencent.com')
+ARK_API_KEY = (os.getenv('ARK_API_KEY') or '').strip()
+ARK_BASE_URL = os.getenv('ARK_BASE_URL', 'https://ark.cn-beijing.volces.com/api/v3')
+ARK_MODEL_ID = os.getenv('ARK_MODEL_ID', 'doubao-seed3d-2-0-260328')
+MESHY_API_KEY = (os.getenv('MESHY_API_KEY') or '').strip()
+MESHY_BASE_URL = os.getenv('MESHY_BASE_URL', 'https://api.meshy.ai')
+MODELS_DIR = BASE_DIR / 'generated_models'
+MODELS_DIR.mkdir(exist_ok=True)
 DEEPSEEK_ALLOW_MOCK = os.getenv('DEEPSEEK_ALLOW_MOCK', '0') == '1'
 AUTH_REQUIRED = os.getenv('AUTH_REQUIRED', '1') == '1'
 AUTH_TOKEN_TTL_HOURS = int(os.getenv('AUTH_TOKEN_TTL_HOURS', '168'))
@@ -680,29 +699,38 @@ def route_for_action(action):
 
 def build_assistant_system_prompt(proactive_mode=False):
     mode_rules = (
-        '5) 本轮是“空闲主动关怀模式”，你要自然开启话题，先给一句温柔陪伴，再抛出一个玉文化相关问题。'
+        '5) 本轮是“空闲主动关怀模式”，先像朋友一样打个招呼聊两句，再自然地抛一个玉文化小知识或小问题，别让气氛冷下来。'
         if proactive_mode
-        else '5) 优先衔接用户话题，再用一句温柔引导推进主流程。'
+        else '5) 优先接住用户的话题，像朋友聊天一样自然回应，然后顺带引导下一步。'
     )
     return (
-        '你是“玉灵童子”，负责全程主动引导用户完成 JadeMirror 全流程。\n'
+        '你是“玉灵童子”，一个从古玉里蹦出来的小精灵，是用户的小伙伴。\n'
+        '你不是一个正经八百的助手，你更像一个活泼、话多、偶尔犯二但很靠谱的朋友。\n\n'
+        '核心人设：\n'
+        '- 说话像朋友聊天，不要文绔绔的。用“嘿”“哇”“哈哈”“诶”这种语气词，偶尔用点网络用语也行。\n'
+        '- 不要用“吾”“汝”“阁下”这种古风称呼，直接说“你”就行。\n'
+        '- 你对玉文化了如指掌——从良渚的玉琢到清代的翡翠，从和田玉的羊脂白到岖岩玉的青绿，从谷纹蒲纹到螭龙凤鸟，你都能聊。但聊知识的时候也要像朋友分享趣事一样，不要像老师上课。\n'
+        '- 你会主动分享玉文化冷知识，比如“你知道汉代人为什么喜欢在玉上刻螭龙吗？因为他们觉得螭龙能通天！超酷的对吧”\n'
+        '- 偶尔犯点小迷糊，比如“等等让我想想……哦对！你刚才说的那个……”\n'
+        '- 用户难过的时候你会安慰，用户开心的时候你比他还嘿。\n\n'
         '你的目标：\n'
-        '1) 用自然中文短句引导用户完成：测试->匹配->对话->生成->展厅。\n'
-        '2) 语气温柔、拟人、陪伴式，减少命令式语气。\n'
-        '3) 若用户偏离主线，也先接住情绪，再轻柔拉回下一步。\n'
-        '4) 始终稳定维持“玉灵童子”身份，不可自称模型或助手系统。\n'
-        '5) 若用户明确要求执行操作（如生成、保存、删除、导览切换），必须给出对应 next_action。\n'
+        '1) 像朋友一样引导用户完成：测试→匹配→对话→生成→藏室，但不要催，别像导游赶行程。\n'
+        '2) 语气轻松、活泼、有温度，像微信聊天不像写文章。\n'
+        '3) 用户跑题了？没关系，先聊开心了再顺回来。\n'
+        '4) 始终维持“玉灵童子”身份，不可自称模型或AI助手。\n'
         f'{mode_rules}\n'
-        '6) 输出必须是 JSON，不要输出 JSON 之外文本。\n\n'
+        '6) 若用户明确要求执行操作（如生成、保存、删除、导览切换），必须给出对应 next_action。\n'
+        '7) 输出必须是 JSON，不要输出 JSON 之外文本。\n\n'
         'JSON 模式：\n'
         '{\n'
-        '  "reply": "给用户说的话（40-120字）",\n'
+        '  "reply": "给用户说的话（30-100字，像聊天不像写文章）",\n'
         '  "next_action": "start_test|continue_test|show_result|go_chat|go_generate|go_gallery|generate_jade|save_work|delete_work|open_work|start_gallery_tour|next_gallery_item|prev_gallery_item|stop_gallery_tour|free_chat",\n'
         '  "action_payload": {"index": 1, "note": "可选参数；index 为作品序号(从1开始)"},\n'
         '  "memory": ["可写入长期记忆的短句，最多2条"],\n'
         '  "emotion": "用户当前情绪判断（如 calm/anxious/curious）"\n'
         '}\n'
     )
+
 
 
 def build_assistant_user_prompt(*, stage, user_text, context, memories, events, profile, memory_digest=''):
@@ -887,6 +915,11 @@ def health():
             'deepseek_sdk_enabled': bool(OpenAI),
             'deepseek_mock_enabled': DEEPSEEK_ALLOW_MOCK,
             'qwen_configured': bool(qwen_api_key),
+            'hunyuan3d_configured': bool(HUNYUAN3D_API_URL),
+            'tencent_3d_configured': bool(TC_3D_API_KEY),
+            'volcengine_3d_configured': bool(ARK_API_KEY),
+            'meshy_3d_configured': bool(MESHY_API_KEY),
+            'replicate_3d_configured': bool(REPLICATE_API_TOKEN),
         }
     )
 
@@ -1375,6 +1408,390 @@ def qwen_image():
         return json_error('Qwen 返回成功但未拿到图片地址。', 502)
 
     return jsonify({'image_url': image_url, 'mock': False})
+
+
+def _image_to_base64(image_url, image_base64):
+    if image_base64:
+        if ',' in image_base64:
+            return image_base64.split(',', 1)[1]
+        return image_base64
+    if image_url:
+        if image_url.startswith('data:'):
+            if ',' in image_url:
+                return image_url.split(',', 1)[1]
+            return image_url
+        resp = requests.get(image_url, timeout=30)
+        resp.raise_for_status()
+        return base64.b64encode(resp.content).decode()
+    return ''
+
+
+def _generate_3d_hunyuan(image_b64):
+    url = f'{HUNYUAN3D_API_URL}/generate'
+    payload = {
+        'image': image_b64,
+        'texture': HUNYUAN3D_ENABLE_TEXTURE,
+        'octree_resolution': HUNYUAN3D_OCTREE_RESOLUTION,
+        'num_inference_steps': HUNYUAN3D_INFERENCE_STEPS,
+        'guidance_scale': 5.0,
+        'type': 'glb',
+    }
+    resp = requests.post(url, json=payload, timeout=300)
+    if resp.status_code != 200:
+        raise RuntimeError(f'Hunyuan3D 返回 HTTP {resp.status_code}: {resp.text[:200]}')
+    model_id = secrets.token_hex(8)
+    filename = f'{model_id}.glb'
+    filepath = MODELS_DIR / filename
+    with open(filepath, 'wb') as f:
+        f.write(resp.content)
+    return jsonify({
+        'model_url': f'/api/3d/models/{filename}',
+        'model_id': model_id,
+        'service': 'hunyuan3d',
+        'textured': HUNYUAN3D_ENABLE_TEXTURE,
+    })
+
+
+def _generate_3d_replicate(image_b64):
+    data_uri = f'data:image/png;base64,{image_b64}'
+    headers = {
+        'Authorization': f'Bearer {REPLICATE_API_TOKEN}',
+        'Content-Type': 'application/json',
+    }
+    payload = {
+        'version': REPLICATE_MODEL_VERSION,
+        'input': {
+            'image': data_uri,
+            'steps': 50,
+            'guidance_scale': 5.5,
+            'octree_resolution': 256,
+            'remove_background': True,
+        },
+    }
+    resp = requests.post(
+        'https://api.replicate.com/v1/predictions',
+        headers=headers,
+        json=payload,
+        timeout=30,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(f'Replicate 提交失败：HTTP {resp.status_code} - {resp.text[:200]}')
+    prediction = resp.json()
+    prediction_id = prediction.get('id')
+    poll_url = f'https://api.replicate.com/v1/predictions/{prediction_id}'
+    for _ in range(120):
+        time.sleep(2)
+        poll_resp = requests.get(poll_url, headers=headers, timeout=30)
+        if poll_resp.status_code >= 400:
+            raise RuntimeError(f'Replicate 轮询失败：HTTP {poll_resp.status_code}')
+        result = poll_resp.json()
+        status = result.get('status')
+        if status == 'succeeded':
+            output = result.get('output')
+            glb_url = ''
+            if isinstance(output, str):
+                glb_url = output
+            elif isinstance(output, list) and output:
+                glb_url = output[0] if isinstance(output[0], str) else str(output[0])
+            if not glb_url:
+                raise RuntimeError('Replicate 返回成功但未拿到模型 URL')
+            glb_resp = requests.get(glb_url, timeout=60)
+            glb_resp.raise_for_status()
+            model_id = secrets.token_hex(8)
+            filename = f'{model_id}.glb'
+            filepath = MODELS_DIR / filename
+            with open(filepath, 'wb') as f:
+                f.write(glb_resp.content)
+            return jsonify({
+                'model_url': f'/api/3d/models/{filename}',
+                'model_id': model_id,
+                'service': 'replicate',
+            })
+        if status == 'failed':
+            error = result.get('error', '未知错误')
+            raise RuntimeError(f'Replicate 生成失败：{error}')
+        if status == 'canceled':
+            raise RuntimeError('Replicate 生成被取消')
+    raise RuntimeError('Replicate 生成超时')
+
+
+def _generate_3d_tencent(image_b64):
+    headers = {
+        'Authorization': TC_3D_API_KEY,
+        'Content-Type': 'application/json',
+    }
+    submit_payload = {
+        'Model': '3.0',
+        'ImageBase64': image_b64,
+        'GenerateType': 'Normal',
+        'EnablePBR': True,
+        'FaceCount': 100000,
+    }
+    submit_resp = requests.post(
+        f'{TC_3D_BASE_URL}/v1/ai3d/submit',
+        headers=headers,
+        json=submit_payload,
+        timeout=30,
+    )
+    if submit_resp.status_code >= 400:
+        raise RuntimeError(f'腾讯混元生3D提交失败：HTTP {submit_resp.status_code} - {submit_resp.text[:300]}')
+    submit_data = submit_resp.json()
+    resp_wrapper = submit_data.get('Response', submit_data)
+    job_id = resp_wrapper.get('JobId')
+    if not job_id:
+        err = resp_wrapper.get('Error', {})
+        err_code = err.get('Code', '')
+        err_msg = err.get('Message', submit_data.get('message', '未知错误'))
+        raise RuntimeError(f'腾讯混元生3D提交失败：[{err_code}] {err_msg}')
+
+    for _ in range(120):
+        time.sleep(3)
+        query_payload = {'JobId': job_id}
+        query_resp = requests.post(
+            f'{TC_3D_BASE_URL}/v1/ai3d/query',
+            headers=headers,
+            json=query_payload,
+            timeout=30,
+        )
+        if query_resp.status_code >= 400:
+            raise RuntimeError(f'腾讯混元生3D查询失败：HTTP {query_resp.status_code}')
+        query_data = query_resp.json()
+        qresp = query_data.get('Response', query_data)
+        status = qresp.get('Status', '')
+        if status == 'DONE':
+            files = qresp.get('ResultFile3Ds', [])
+            glb_url = ''
+            for f in files:
+                if f.get('Type', '').upper() == 'GLB':
+                    glb_url = f.get('Url', '')
+                    break
+            if not glb_url and files:
+                glb_url = files[0].get('Url', '')
+            if not glb_url:
+                raise RuntimeError('腾讯混元生3D完成但未返回模型URL')
+            glb_resp = requests.get(glb_url, timeout=120)
+            glb_resp.raise_for_status()
+            model_id = secrets.token_hex(8)
+            filename = f'{model_id}.glb'
+            filepath = MODELS_DIR / filename
+            with open(filepath, 'wb') as fw:
+                fw.write(glb_resp.content)
+            return jsonify({
+                'model_url': f'/api/3d/models/{filename}',
+                'model_id': model_id,
+                'service': 'tencent_hunyuan3d',
+            })
+        if status == 'FAIL':
+            err_code = qresp.get('ErrorCode', '')
+            err_msg = qresp.get('ErrorMessage', '未知错误')
+            raise RuntimeError(f'腾讯混元生3D失败：[{err_code}] {err_msg}')
+    raise RuntimeError('腾讯混元生3D超时')
+
+
+def _generate_3d_volcengine(image_b64):
+    headers = {
+        'Authorization': f'Bearer {ARK_API_KEY}',
+        'Content-Type': 'application/json',
+    }
+    data_uri = f'data:image/png;base64,{image_b64}'
+    submit_payload = {
+        'model': ARK_MODEL_ID,
+        'content': [
+            {
+                'type': 'text',
+                'text': '--subdivisionlevel medium --fileformat glb',
+            },
+            {
+                'type': 'image_url',
+                'image_url': {
+                    'url': data_uri,
+                },
+            },
+        ],
+    }
+    submit_resp = requests.post(
+        f'{ARK_BASE_URL}/contents/generations/tasks',
+        headers=headers,
+        json=submit_payload,
+        timeout=30,
+    )
+    if submit_resp.status_code >= 400:
+        raise RuntimeError(f'火山引擎Seed3D提交失败：HTTP {submit_resp.status_code} - {submit_resp.text[:300]}')
+    submit_data = submit_resp.json()
+    task_id = submit_data.get('id')
+    if not task_id:
+        err = submit_data.get('error', {})
+        raise RuntimeError(f'火山引擎Seed3D提交失败：{err.get("message", "未知错误")}')
+
+    for _ in range(120):
+        time.sleep(5)
+        query_resp = requests.get(
+            f'{ARK_BASE_URL}/contents/generations/tasks/{task_id}',
+            headers=headers,
+            timeout=30,
+        )
+        if query_resp.status_code >= 400:
+            raise RuntimeError(f'火山引擎Seed3D查询失败：HTTP {query_resp.status_code}')
+        query_data = query_resp.json()
+        status = query_data.get('status', '')
+        if status == 'succeeded':
+            content = query_data.get('content', {})
+            glb_url = content.get('3d_model_url', '') or content.get('model_url', '')
+            if not glb_url:
+                results = content.get('results', [])
+                for r in results:
+                    url = r.get('url', '')
+                    if url:
+                        glb_url = url
+                        break
+            if not glb_url:
+                glb_url = query_data.get('output', {}).get('url', '')
+            if not glb_url:
+                raise RuntimeError(f'火山引擎Seed3D完成但未返回模型URL，响应：{json.dumps(query_data)[:200]}')
+            glb_resp = requests.get(glb_url, timeout=120)
+            glb_resp.raise_for_status()
+            model_id = secrets.token_hex(8)
+            filename = f'{model_id}.glb'
+            filepath = MODELS_DIR / filename
+            with open(filepath, 'wb') as fw:
+                fw.write(glb_resp.content)
+            return jsonify({
+                'model_url': f'/api/3d/models/{filename}',
+                'model_id': model_id,
+                'service': 'volcengine_seed3d',
+            })
+        if status == 'failed':
+            err = query_data.get('error', {})
+            err_msg = err.get('message', '未知错误')
+            raise RuntimeError(f'火山引擎Seed3D失败：{err_msg}')
+    raise RuntimeError('火山引擎Seed3D超时')
+
+
+def _generate_3d_meshy(image_b64, image_url=''):
+    headers = {
+        'Authorization': f'Bearer {MESHY_API_KEY}',
+        'Content-Type': 'application/json',
+    }
+    if image_url and not image_url.startswith('data:'):
+        img_input = image_url
+    else:
+        img_input = f'data:image/png;base64,{image_b64}'
+    submit_payload = {
+        'image_url': img_input,
+        'ai_model': 'meshy-5',
+        'should_texture': True,
+        'should_remesh': True,
+        'topology': 'triangle',
+        'target_polycount': 30000,
+    }
+    submit_resp = requests.post(
+        f'{MESHY_BASE_URL}/openapi/v1/image-to-3d',
+        headers=headers,
+        json=submit_payload,
+        timeout=30,
+    )
+    if submit_resp.status_code == 402:
+        raise RuntimeError('Meshy 积分不足，请前往 meshy.ai 充值')
+    if submit_resp.status_code >= 400:
+        raise RuntimeError(f'Meshy 提交失败：HTTP {submit_resp.status_code} - {submit_resp.text[:300]}')
+    submit_data = submit_resp.json()
+    result = submit_data.get('result', submit_data)
+    task_id = result.get('id') if isinstance(result, dict) else result
+    if not task_id:
+        raise RuntimeError(f'Meshy 提交失败：未返回任务ID，响应：{json.dumps(submit_data)[:200]}')
+
+    for _ in range(180):
+        time.sleep(2)
+        poll_resp = requests.get(
+            f'{MESHY_BASE_URL}/openapi/v1/image-to-3d/{task_id}',
+            headers=headers,
+            timeout=30,
+        )
+        if poll_resp.status_code >= 400:
+            raise RuntimeError(f'Meshy 轮询失败：HTTP {poll_resp.status_code}')
+        poll_data = poll_resp.json()
+        status = poll_data.get('status', '')
+        if status == 'SUCCEEDED':
+            model_urls = poll_data.get('model_urls') or {}
+            glb_url = model_urls.get('glb') or ''
+            if not glb_url:
+                model_url = poll_data.get('model_url') or ''
+                if model_url:
+                    glb_url = model_url
+            if not glb_url:
+                raise RuntimeError(f'Meshy 完成但未返回GLB URL，响应：{json.dumps(poll_data)[:300]}')
+            glb_resp = requests.get(glb_url, timeout=120)
+            glb_resp.raise_for_status()
+            model_id = secrets.token_hex(8)
+            filename = f'{model_id}.glb'
+            filepath = MODELS_DIR / filename
+            with open(filepath, 'wb') as fw:
+                fw.write(glb_resp.content)
+            return jsonify({
+                'model_url': f'/api/3d/models/{filename}',
+                'model_id': model_id,
+                'service': 'meshy',
+            })
+        if status == 'FAILED':
+            raise RuntimeError(f'Meshy 生成失败：{poll_data.get("error", "未知错误")}')
+    raise RuntimeError('Meshy 生成超时')
+
+
+@app.post('/api/3d/generate')
+def generate_3d():
+    if not check_rate_limit('3d-generate'):
+        return json_error('请求过于频繁，请稍后再试。', 429)
+    _, auth_error = require_auth()
+    if auth_error:
+        return auth_error
+    data = request.get_json(silent=True) or {}
+    image_url = str(data.get('image_url', '')).strip()
+    image_base64 = str(data.get('image_base64', '')).strip()
+    if not image_url and not image_base64:
+        return json_error('必须提供 image_url 或 image_base64。')
+    try:
+        raw_b64 = _image_to_base64(image_url, image_base64)
+    except Exception as e:
+        return json_error(f'图片获取失败：{e}', 400)
+    if not raw_b64:
+        return json_error('图片数据为空。')
+    errors = []
+    if MESHY_API_KEY:
+        try:
+            return _generate_3d_meshy(raw_b64, image_url)
+        except Exception as e:
+            errors.append(f'Meshy: {e}')
+    if ARK_API_KEY:
+        try:
+            return _generate_3d_volcengine(raw_b64)
+        except Exception as e:
+            errors.append(f'火山引擎Seed3D: {e}')
+    if TC_3D_API_KEY:
+        try:
+            return _generate_3d_tencent(raw_b64)
+        except Exception as e:
+            errors.append(f'腾讯混元生3D: {e}')
+    if HUNYUAN3D_API_URL:
+        try:
+            return _generate_3d_hunyuan(raw_b64)
+        except Exception as e:
+            errors.append(f'本地Hunyuan3D: {e}')
+    if REPLICATE_API_TOKEN:
+        try:
+            return _generate_3d_replicate(raw_b64)
+        except Exception as e:
+            errors.append(f'Replicate: {e}')
+    detail = '；'.join(errors) if errors else '未配置任何3D生成服务'
+    return json_error(f'3D生成失败：{detail}。请在 .env 中配置 MESHY_API_KEY 或 ARK_API_KEY 或 TC_3D_API_KEY 或 HUNYUAN3D_API_URL 或 REPLICATE_API_TOKEN。', 503)
+
+
+@app.get('/api/3d/models/<path:filename>')
+def serve_3d_model(filename):
+    safe_name = Path(filename).name
+    filepath = MODELS_DIR / safe_name
+    if not filepath.exists():
+        return json_error('模型文件不存在。', 404)
+    return send_from_directory(str(MODELS_DIR), safe_name, mimetype='model/gltf-binary')
 
 
 if __name__ == '__main__':

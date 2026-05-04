@@ -8,6 +8,36 @@ const userStore = useUserStore()
 const audioStore = useAudioStore()
 const assistantStore = useAssistantStore()
 
+const traitLabels = {
+  landscape: '山水',
+  color: '色泽',
+  symbol: '纹样',
+  mood: '气韵',
+  texture: '质地',
+}
+
+const dynastySuffixes = ['良渚', '红山', '龙山', '仰韶', '河姆渡', '大汶口', '三星堆']
+
+function getEraLabel(dynasty) {
+  if (!dynasty) return ''
+  if (dynastySuffixes.includes(dynasty)) return `${dynasty}文化`
+  return `${dynasty}代`
+}
+
+function buildJadeIntro(work) {
+  const parts = []
+  if (work.jadeDescription) parts.push(work.jadeDescription)
+  if (work.jadeTraits && Object.keys(work.jadeTraits).length) {
+    const traitParts = []
+    for (const [key, val] of Object.entries(work.jadeTraits)) {
+      const label = traitLabels[key] || key
+      traitParts.push(`${label}：${val}`)
+    }
+    if (traitParts.length) parts.push(traitParts.join('，'))
+  }
+  return parts.join('。')
+}
+
 const works = computed(() => userStore.works)
 const tourActive = computed(() => assistantStore.galleryTourIndex >= 0)
 const autoTour = computed(() => assistantStore.galleryTourAuto)
@@ -49,7 +79,6 @@ async function replayWorkSound(work) {
   try {
     await audioStore.playJadeMelody({
       jade: null,
-      emotion: work.emotion,
       mode: 'touch',
       overrideAudioParams: work.audioParams,
     })
@@ -89,7 +118,7 @@ function toggleAutoTour() {
 <template>
   <section class="gallery section-grid">
     <div class="actions-row top-guide">
-      <button type="button" class="jade-button secondary" @click="startVoiceTour">开启展厅语音导览</button>
+      <button type="button" class="jade-button secondary" @click="startVoiceTour">开启藏室语音导览</button>
       <button type="button" class="jade-button secondary" :disabled="!tourActive" @click="prevTourItem">上一件</button>
       <button type="button" class="jade-button secondary" :disabled="!tourActive" @click="nextTourItem">下一件</button>
       <button type="button" class="jade-button secondary" :disabled="!tourActive" @click="toggleAutoTour">
@@ -100,7 +129,7 @@ function toggleAutoTour() {
     <p v-if="pageError" class="error-text">{{ pageError }}</p>
 
     <article v-if="!works.length" class="jade-card empty">
-      <h3>展厅为空</h3>
+      <h3>藏室为空</h3>
       <p class="text-muted">先前往“专属玉生成”页面保存你的第一件作品。</p>
     </article>
 
@@ -112,8 +141,7 @@ function toggleAutoTour() {
 
         <div class="work-body">
           <h3>{{ work.jadeName }}</h3>
-          <p class="text-muted">{{ work.jadeDynasty }}代 · {{ formatDate(work.date) }}</p>
-          <p class="text-muted">情绪：{{ work.emotion }}</p>
+          <p class="text-muted">{{ getEraLabel(work.jadeDynasty) }} · {{ formatDate(work.date) }}</p>
         </div>
 
         <div class="actions-row">
@@ -127,9 +155,9 @@ function toggleAutoTour() {
       <article class="modal-card jade-card">
         <img :src="selectedWork.imageDataURL" :alt="selectedWork.jadeName" />
         <h3>{{ selectedWork.jadeName }}</h3>
-        <p class="text-muted">{{ selectedWork.jadeDynasty }}代 · {{ formatDate(selectedWork.date) }}</p>
-        <p class="text-muted">情绪：{{ selectedWork.emotion }}</p>
-        <p class="prompt">{{ selectedWork.prompt }}</p>
+        <p class="text-muted">{{ getEraLabel(selectedWork.jadeDynasty) }} · {{ formatDate(selectedWork.date) }}</p>
+        <p v-if="selectedWork.jadeDescription || selectedWork.jadeTraits" class="jade-intro">{{ buildJadeIntro(selectedWork) }}</p>
+        <p v-if="selectedWork.jadePersonality" class="jade-personality">{{ selectedWork.jadePersonality }}</p>
         <div class="actions-row">
           <button type="button" class="jade-button secondary" @click="replayWorkSound(selectedWork)">
             重新播放触摸音效
@@ -221,14 +249,19 @@ function toggleAutoTour() {
   background: rgba(238, 245, 240, 0.78);
 }
 
-.prompt {
-  max-height: 120px;
-  overflow: auto;
-  padding: 0.65rem;
-  border-radius: var(--radius-md);
-  border: 1px solid rgba(56, 89, 77, 0.2);
-  background: rgba(245, 249, 246, 0.82);
-  color: var(--ink-500);
+.jade-intro {
+  margin: 0.4rem 0 0;
+  font-size: 0.88rem;
+  line-height: 1.7;
+  color: var(--ink-700);
+}
+
+.jade-personality {
+  margin: 0.4rem 0 0;
+  font-size: 0.84rem;
+  line-height: 1.7;
+  color: var(--ink-600);
+  font-style: italic;
 }
 
 .error-text {

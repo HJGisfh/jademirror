@@ -158,6 +158,9 @@ async function createOpeningMessage() {
       jade: jade.value,
       matchReason: userStore.matchReason,
       testAnswers: userStore.testAnswers,
+      userVector: userStore.userVector,
+      mbtiType: userStore.mbtiType,
+      archetype: userStore.archetype,
       messages: [
         {
           role: 'user',
@@ -234,6 +237,9 @@ async function sendMessage() {
       jade: jade.value,
       matchReason: userStore.matchReason,
       testAnswers: userStore.testAnswers,
+      userVector: userStore.userVector,
+      mbtiType: userStore.mbtiType,
+      archetype: userStore.archetype,
       messages: messages.value.map((item) => ({
         role: item.role,
         content: item.content,

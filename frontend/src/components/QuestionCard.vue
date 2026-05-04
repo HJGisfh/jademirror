@@ -8,6 +8,10 @@ const props = defineProps({
     type: String,
     default: '',
   },
+  showModule: {
+    type: Boolean,
+    default: false,
+  },
 })
 
 const emit = defineEmits(['update:modelValue'])
@@ -20,6 +24,9 @@ function chooseOption(value) {
 <template>
   <article class="question-card jade-card">
     <header class="question-header">
+      <p v-if="showModule && question.moduleTitle" class="module-badge">
+        {{ question.moduleTitle }}
+      </p>
       <p class="question-subtitle">{{ question.subtitle }}</p>
       <h3>{{ question.title }}</h3>
     </header>
@@ -51,6 +58,17 @@ function chooseOption(value) {
 
 .question-header {
   margin-bottom: 0.9rem;
+}
+
+.module-badge {
+  display: inline-block;
+  font-size: 0.78rem;
+  padding: 0.18rem 0.6rem;
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(67, 112, 101, 0.18), rgba(82, 133, 114, 0.12));
+  color: var(--ink-600);
+  margin-bottom: 0.35rem;
+  letter-spacing: 0.04em;
 }
 
 .question-subtitle {

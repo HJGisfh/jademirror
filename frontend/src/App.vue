@@ -37,7 +37,7 @@ const titleMap = {
     subtitle: '融合偏好与情绪，生成只属于你的数字玉器。',
   },
   Gallery: {
-    title: '个人展厅',
+    title: '个人藏室',
     subtitle: '你的作品将沉淀成一座可回看的私藏宝阁。',
   },
 }
@@ -74,7 +74,7 @@ async function handleAuthAction() {
       </RouterLink>
       <div class="top-actions" aria-label="站点工具">
         <RouterLink to="/" class="tool-link">主页</RouterLink>
-        <RouterLink to="/gallery" class="tool-link">个人展厅</RouterLink>
+        <RouterLink to="/gallery" class="tool-link">个人藏室</RouterLink>
         <span v-if="authStore.isLoggedIn" class="user-badge">{{ authStore.displayName }}</span>
         <button type="button" class="tool-btn" @click="handleAuthAction">{{ authLabel }}</button>
         <button type="button" class="tool-btn" @click="toggleSound">{{ soundLabel }}</button>
@@ -99,7 +99,7 @@ async function handleAuthAction() {
       <article class="about-card jade-card">
         <h2>玉镜 JadeMirror</h2>
         <p>
-          以玉为镜，照见本心。你将通过照心测试匹配一件古玉，再与它对话、生成专属玉作，并将作品收藏于个人展厅。
+          以玉为镜，照见本心。你将通过照心测试匹配一件古玉，再与它对话、生成专属玉作，并将作品收藏于个人藏室。
         </p>
         <button type="button" class="jade-button primary" @click="showAbout = false">知道了</button>
       </article>

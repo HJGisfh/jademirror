@@ -9,12 +9,12 @@ import {
   requestAssistantTurn,
 } from '@/api/jadeApi'
 import { fetchJadeLibrary } from '@/api/jadeLibrary'
-import { testQuestions } from '@/data/questions'
+import { deepTestQuestions, quickTestQuestions } from '@/data/questions'
 import { useApiStore } from '@/stores/apiStore'
 import { useUserStore } from '@/stores/userStore'
 import { useVoiceStore } from '@/stores/voiceStore'
 import { createFallbackJadeDataURL, urlToDataURL } from '@/utils/image'
-import { matchJadeByAnswers } from '@/utils/matching'
+import { computeUserVector, matchJadeByVector, deriveFlowchartPath } from '@/utils/matching'
 import { buildImagePrompt } from '@/utils/prompt'
 
 const IDLE_NUDGE_MS = 1000 * 90
@@ -85,6 +85,9 @@ export const useAssistantStore = defineStore('assistant', {
     galleryTourTimerId: 0,
     guidedTestActive: false,
     guidedQuestionIndex: 0,
+    guidedTestMode: 'deep',
+    autoListen: false,
+    silenceThreshold: 1500,
   }),
   getters: {
     latestReply: (state) => {
@@ -95,7 +98,11 @@ export const useAssistantStore = defineStore('assistant', {
       }
       return null
     },
-    currentQuestion: (state) => (state.guidedTestActive ? testQuestions[state.guidedQuestionIndex] : null),
+    currentQuestion: (state) => {
+      if (!state.guidedTestActive) return null
+      const questions = state.guidedTestMode === 'quick' ? quickTestQuestions : deepTestQuestions
+      return questions[state.guidedQuestionIndex] || null
+    },
     filteredMemories: (state) => {
       if (state.memoryFilter === 'all') {
         return state.memories
@@ -246,7 +253,7 @@ export const useAssistantStore = defineStore('assistant', {
         return
       }
       const text =
-        '我是玉灵童子。你可以直接和我说话，我会主动带你完成照心测试、古玉匹配、对话、生玉与展厅管理。'
+        '我是玉灵童子。你可以直接和我说话，我会主动带你完成照心测试、古玉匹配、对话、生玉与藏室管理。'
       this.appendMessage('assistant', text)
       this.speak(text)
       this.ready = true
@@ -311,16 +318,16 @@ export const useAssistantStore = defineStore('assistant', {
         } catch {
           dataUrl = imageUrl
         }
-        userStore.setGeneratedResult({ imageDataUrl: dataUrl, prompt })
-        this.appendMessage('assistant', '专属玉已经生成完成。我可以继续帮你保存到展厅。')
-        this.speak('专属玉已经生成完成。我可以继续帮你保存到展厅。')
+        userStore.setGeneratedResult({ imageDataUrl: dataUrl, prompt, originalUrl: imageUrl })
+        this.appendMessage('assistant', '专属玉已经生成完成。我可以继续帮你保存到藏室。')
+        this.speak('专属玉已经生成完成。我可以继续帮你保存到藏室。')
         if (this.autoGuide && router) {
           router.push('/generate')
         }
         return true
       } catch {
         const fallback = createFallbackJadeDataURL(jade.name)
-        userStore.setGeneratedResult({ imageDataUrl: fallback, prompt })
+        userStore.setGeneratedResult({ imageDataUrl: fallback, prompt, originalUrl: '' })
         this.appendMessage('assistant', '网络有点拥挤，我先为你保留一版临时玉图，你可稍后再次生成。')
         this.speak('网络有点拥挤，我先为你保留一版临时玉图，你可稍后再次生成。')
         if (this.autoGuide && router) {
@@ -337,8 +344,8 @@ export const useAssistantStore = defineStore('assistant', {
         this.speak('还没有可保存的专属玉。你可以先让我为你生成。')
         return false
       }
-      this.appendMessage('assistant', `已帮你保存到展厅：${work.jadeDynasty}代意象的${work.jadeName}。`)
-      this.speak(`已帮你保存到展厅：${work.jadeDynasty}代意象的${work.jadeName}。`)
+      this.appendMessage('assistant', `已帮你保存到藏室：${work.jadeDynasty}代意象的${work.jadeName}。`)
+      this.speak(`已帮你保存到藏室：${work.jadeDynasty}代意象的${work.jadeName}。`)
       if (this.autoGuide && router) {
         router.push('/gallery')
       }
@@ -347,8 +354,8 @@ export const useAssistantStore = defineStore('assistant', {
     removeWorkByVoice(index, router) {
       const userStore = useUserStore()
       if (!userStore.works.length) {
-        this.appendMessage('assistant', '展厅目前没有藏品可删除。')
-        this.speak('展厅目前没有藏品可删除。')
+        this.appendMessage('assistant', '藏室目前没有藏品可删除。')
+        this.speak('藏室目前没有藏品可删除。')
         return false
       }
       const targetIndex = clampWorkIndex(index, userStore.works.length)
@@ -364,8 +371,8 @@ export const useAssistantStore = defineStore('assistant', {
     openWorkByVoice(index, router) {
       const userStore = useUserStore()
       if (!userStore.works.length) {
-        this.appendMessage('assistant', '展厅还没有作品，先保存一件吧。')
-        this.speak('展厅还没有作品，先保存一件吧。')
+        this.appendMessage('assistant', '藏室还没有作品，先保存一件吧。')
+        this.speak('藏室还没有作品，先保存一件吧。')
         return false
       }
       const targetIndex = clampWorkIndex(index, userStore.works.length)
@@ -459,17 +466,20 @@ export const useAssistantStore = defineStore('assistant', {
         this.touchActivity(router)
       }
     },
-    startGuidedTest() {
+    startGuidedTest(mode = 'deep') {
       this.guidedTestActive = true
       this.guidedQuestionIndex = 0
-      const question = testQuestions[0]
+      this.guidedTestMode = mode
+      const questions = mode === 'quick' ? quickTestQuestions : deepTestQuestions
+      const question = questions[0]
       const guide = buildQuestionGuide(question, 0)
       this.appendMessage('assistant', `我们开始照心测试。${guide}`)
       this.speak(`我们开始照心测试。${guide}`)
     },
     async handleGuidedAnswer(answerText, router) {
       const userStore = useUserStore()
-      const question = testQuestions[this.guidedQuestionIndex]
+      const questions = this.guidedTestMode === 'quick' ? quickTestQuestions : deepTestQuestions
+      const question = questions[this.guidedQuestionIndex]
       if (!question) {
         this.guidedTestActive = false
         return
@@ -489,8 +499,8 @@ export const useAssistantStore = defineStore('assistant', {
       this.speak(confirmed)
 
       this.guidedQuestionIndex += 1
-      if (this.guidedQuestionIndex < testQuestions.length) {
-        const nextQuestion = testQuestions[this.guidedQuestionIndex]
+      if (this.guidedQuestionIndex < questions.length) {
+        const nextQuestion = questions[this.guidedQuestionIndex]
         const guide = buildQuestionGuide(nextQuestion, this.guidedQuestionIndex)
         this.appendMessage('assistant', guide)
         this.speak(guide)
@@ -500,34 +510,41 @@ export const useAssistantStore = defineStore('assistant', {
       await this.finishGuidedTest(router)
     },
     async finishGuidedTest(router) {
+      this.guidedTestActive = false
       const userStore = useUserStore()
+
       try {
-        const jades = await fetchJadeLibrary()
-        const result = matchJadeByAnswers({
-          jades,
-          answers: userStore.testAnswers,
-        })
+        const jadeLib = await fetchJadeLibrary()
+        const questions = this.guidedTestMode === 'quick' ? quickTestQuestions : deepTestQuestions
+        const userVector = computeUserVector(questions, userStore.testAnswers)
+        userStore.setUserVector(userVector)
+
+        const result = matchJadeByVector({ jades: jadeLib, userVector })
+        const flowPath = deriveFlowchartPath(questions, userStore.testAnswers, userVector, result.profile)
+
         userStore.setMatchResult({
           jade: result.jade,
-          reason: result.reason,
+          profile: result.profile,
+          reason: result.profile.verdict,
           score: result.score,
+          mbtiType: result.mbtiType,
+          archetype: result.archetype,
+          dimensionScores: result.dimensionScores,
+          shadowJade: result.shadowJade,
+          shadowProfile: result.shadowProfile,
+          flowchartPath: flowPath,
         })
         userStore.clearGeneratedResult()
-        this.guidedTestActive = false
-        this.guidedQuestionIndex = 0
-        const doneReply = `测试完成。与你最契合的是${result.jade.dynasty}代${result.jade.name}。我现在带你去看匹配结果。`
-        this.appendMessage('assistant', doneReply)
-        this.speak(doneReply)
-        if (this.autoGuide) {
-          router.push('/result')
-        }
-      } catch (error) {
-        this.guidedTestActive = false
-        this.guidedQuestionIndex = 0
-        this.lastError = error.message || '匹配失败，请稍后再试。'
-        const failReply = '匹配暂时失败了，我们稍后再试一次。'
-        this.appendMessage('assistant', failReply)
-        this.speak(failReply)
+
+        const msg = `照心测试完成！你与${result.jade.dynasty}代${result.jade.name}最为契合，你的MBTI类型是${result.mbtiType}，原型是${result.archetype.label}。`
+        this.appendMessage('assistant', msg)
+        this.speak(msg)
+
+        if (router) router.push('/result')
+      } catch (err) {
+        const msg = `匹配过程中遇到了一些问题：${err.message}。你可以手动前往测试页面完成匹配。`
+        this.appendMessage('assistant', msg)
+        this.speak(msg)
       }
     },
     async loadMemories() {
@@ -673,14 +690,14 @@ export const useAssistantStore = defineStore('assistant', {
     },
     guideGalleryTour(works = []) {
       if (!Array.isArray(works) || works.length === 0) {
-        const emptyText = '你的展厅还没有藏品。等你生成第一件专属玉后，我会为你做语音导览。'
+        const emptyText = '你的藏室还没有藏品。等你生成第一件专属玉后，我会为你做语音导览。'
         this.appendMessage('assistant', emptyText)
         this.speak(emptyText)
         return
       }
       this.galleryTourWorks = [...works]
       this.galleryTourIndex = 0
-      const open = `欢迎来到你的个人展厅。你目前收藏了${works.length}件玉作。现在我为你逐件讲解。`
+      const open = `欢迎来到你的个人藏室。你目前收藏了${works.length}件玉作。现在我为你逐件讲解。`
       this.appendMessage('assistant', open)
       this.speak(open)
       this.speakCurrentGalleryWork()

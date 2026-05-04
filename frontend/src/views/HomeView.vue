@@ -43,7 +43,7 @@ function visitGallery() {
           :class="{ weak: !hasWorks }"
           @click="visitGallery"
         >
-          {{ hasWorks ? '参观展厅' : '参观展厅（暂无藏玉）' }}
+          {{ hasWorks ? '参观藏室' : '参观藏室（暂无藏玉）' }}
         </button>
       </div>
     </article>

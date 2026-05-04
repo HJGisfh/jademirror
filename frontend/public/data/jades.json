@@ -5,7 +5,7 @@
     "dynasty": "汉",
     "description": "青白玉质，螭龙浮雕，线条沉稳有力。",
     "personality": "我见过王朝更迭，也见过人心起伏。我说话不急，但总会把答案留给愿意静听的人。",
-    "image": "/assets/jade-base.svg",
+    "image": "/assets/jade-pei.svg",
     "traits": {
       "landscape": "山",
       "color": "青",
@@ -28,7 +28,7 @@
     "dynasty": "战国",
     "description": "白玉温润，凤鸟回旋，造型灵秀。",
     "personality": "我偏爱风与远方，也偏爱人间的分寸。你的问题若轻，我会回你一片清羽。",
-    "image": "/assets/jade-alt.svg",
+    "image": "/assets/jade-fengpei.svg",
     "traits": {
       "landscape": "云",
       "color": "白",
@@ -51,7 +51,7 @@
     "dynasty": "良渚",
     "description": "器形方中寓圆，纹饰庄严神秘。",
     "personality": "我守护的是秩序与边界。若你迷惘，我会让你看见自己真正的重心。",
-    "image": "/assets/jade-warm.svg",
+    "image": "/assets/jade-cong.svg",
     "traits": {
       "landscape": "山",
       "color": "黄",
@@ -74,7 +74,7 @@
     "dynasty": "唐",
     "description": "玉环轻薄，纹样流动，气息明朗。",
     "personality": "我从云间来，懂得轻与重如何共处。你若想飞，我先教你落地。",
-    "image": "/assets/jade-alt.svg",
+    "image": "/assets/jade-huan.svg",
     "traits": {
       "landscape": "云",
       "color": "白",
@@ -97,7 +97,7 @@
     "dynasty": "宋",
     "description": "素面留白，气韵克制，温和有度。",
     "personality": "我不喧哗，也不空白。我以沉默回应喧嚣，用留白承接你未说出口的部分。",
-    "image": "/assets/jade-base.svg",
+    "image": "/assets/jade-bi.svg",
     "traits": {
       "landscape": "水",
       "color": "青",
@@ -120,7 +120,7 @@
     "dynasty": "明",
     "description": "蝉纹细密，质地通透，神态内敛。",
     "personality": "我熟悉等待，也熟悉蜕变。你若急躁，我会借一段静意给你。",
-    "image": "/assets/jade-base.svg",
+    "image": "/assets/jade-le.svg",
     "traits": {
       "landscape": "竹",
       "color": "白",
@@ -143,7 +143,7 @@
     "dynasty": "清",
     "description": "赤沁点染，龙纹盘旋，气势强烈。",
     "personality": "我带着火色，也带着分寸。若你要破局，我会先问你为何而战。",
-    "image": "/assets/jade-warm.svg",
+    "image": "/assets/jade-pai.svg",
     "traits": {
       "landscape": "山",
       "color": "赤",
@@ -166,7 +166,7 @@
     "dynasty": "西周",
     "description": "弧形玉璜，凤纹舒展，古朴安和。",
     "personality": "我不追赶时间，我只是把时序排好。你若困惑，我会让你慢下来再看。",
-    "image": "/assets/jade-warm.svg",
+    "image": "/assets/jade-huang.svg",
     "traits": {
       "landscape": "水",
       "color": "黄",
@@ -189,7 +189,7 @@
     "dynasty": "东汉",
     "description": "云雷纹与蝉纹并置，灵动而精谨。",
     "personality": "我擅长把细碎线索连成完整图景。你若不安，我会替你梳理方向。",
-    "image": "/assets/jade-alt.svg",
+    "image": "/assets/jade-chanpei.svg",
     "traits": {
       "landscape": "云",
       "color": "青",
@@ -212,7 +212,7 @@
     "dynasty": "南朝",
     "description": "水波纹细密，器形圆润，神采清逸。",
     "personality": "我喜欢慢慢回响，像水面轻波。你若愿意停一停，就能听见自己的答案。",
-    "image": "/assets/jade-base.svg",
+    "image": "/assets/jade-shuibo.svg",
     "traits": {
       "landscape": "水",
       "color": "白",
