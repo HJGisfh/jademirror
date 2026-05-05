@@ -19,6 +19,8 @@ frontend/.env.*.local
 # Backend
 backend/.env
 backend/Flask.py
+mobile_backend/.env
+mobile_backend/generated_models/
 *.log
 
 # IDE

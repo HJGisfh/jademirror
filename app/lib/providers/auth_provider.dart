@@ -302,6 +302,6 @@ class AuthProvider extends ChangeNotifier {
             'flutter build apk --release --dart-define=JADEMIRROR_DEV_HOST=http://192.168.x.x:5000'
         : '';
 
-    return '无法连接到后端（当前请求：$base）。请检查：① 电脑已运行 app/backend 或 jademirror/backend 的 python；② Windows 防火墙放行端口；③ 真机与电脑同一 Wi‑Fi 或同一 Tailscale；④ 不要用 10.0.2.2（仅模拟器）。$tailscaleHint\n$msg';
+    return '无法连接到后端（当前请求：$base）。请检查：① 电脑已运行 jademirror/backend 的 python app.py（Web）或 python app_mobile.py（手机）；② Windows 防火墙放行端口；③ 真机与电脑同一 Wi‑Fi 或同一 Tailscale；④ 不要用 10.0.2.2（仅模拟器）。$tailscaleHint\n$msg';
   }
 }

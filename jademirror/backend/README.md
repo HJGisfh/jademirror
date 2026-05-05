@@ -2,7 +2,7 @@
 
 This Flask service proxies DeepSeek and Qwen API requests for the Vue frontend.
 
-独立进程：**Web** 用本目录 `python app.py`（读此处 `.env`，默认 5000）；**Flutter 手机 App** 使用仓库 `app/backend/` 的后端（默认 5001，数据与配置与本目录隔离）。共享实现在 `jademirror_core/`。
+独立进程：**Web** 用本目录 `python app.py`（读此处 `.env`，默认 5000）；**Flutter 手机 App** 在同一目录执行 `python app_mobile.py`（读 `../mobile_backend/.env`，默认 5001，数据与配置与 Web 隔离）。共享实现在 `jademirror_core/`。
 
 ## 1) Setup
 
@@ -15,13 +15,25 @@ copy .env.example .env
 
 Fill API keys in `.env`.
 
-## 2) Run
+## 2) Run (Web)
 
 ```bash
 python app.py
 ```
 
 Service defaults to `http://127.0.0.1:5000`.
+
+## 2b) Run (Flutter 手机 API)
+
+```bash
+# Windows
+copy ..\mobile_backend\.env.example ..\mobile_backend\.env
+# Linux / macOS
+# cp ../mobile_backend/.env.example ../mobile_backend/.env
+python app_mobile.py
+```
+
+默认 `http://127.0.0.1:5001/api`；与 Vite 的 5000 进程互不干扰。
 
 ## 3) API
 

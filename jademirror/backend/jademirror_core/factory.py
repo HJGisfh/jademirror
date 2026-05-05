@@ -20,7 +20,8 @@ def resolve_instance_root(profile: str) -> Path:
     if profile == 'web':
         return root / 'jademirror' / 'backend'
     if profile == 'app':
-        return root / 'app' / 'backend'
+        # Flutter 专用配置与数据目录，与 Web 后端同归 jademirror 下，避免混在 app/ 里
+        return root / 'jademirror' / 'mobile_backend'
     raise ValueError(f'unknown profile: {profile!r}')
 
 
