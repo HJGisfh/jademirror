@@ -1,35 +1,54 @@
-# Development
+# 环境密钥（勿提交）
+.env
+**/.env
+!**/.env.example
+
+# Python
 .venv/
 venv/
 env/
 __pycache__/
 *.pyc
+*.pyo
 .pytest_cache/
 *.egg-info/
 dist/
 build/
 
-# Frontend
-frontend/node_modules/
-frontend/dist/
-frontend/.env*
-frontend/.env.local
-frontend/.env.*.local
+# Node
+node_modules/
+**/node_modules/
 
-# Backend
-backend/.env
-backend/Flask.py
+# Flutter / Dart
+app/.dart_tool/
+app/build/
+app/local.properties
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+
+# 前端构建产物与本地环境
+jademirror/frontend/dist/
+jademirror/frontend/.env*
+jademirror/frontend/.env.local
+jademirror/frontend/.env.*.local
+
+# 日志
 *.log
 
-# IDE
-.vscode/
+# 本地数据库与生成文件（开发机）
+**/jademirror_auth.db
+**/generated_models/
+*.db
+.tmp
+
+# IDE / 系统
 .idea/
+.vscode/
 *.swp
 *.swo
 *~
-
-# OS
 .DS_Store
 Thumbs.db
-*.db
-.tmp
+
+# Cursor
+.cursor/

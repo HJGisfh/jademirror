@@ -1,0 +1,10 @@
+.git
+**/build
+**/.dart_tool
+**/node_modules
+**/.venv
+**/__pycache__
+**/*.pyc
+**/.env
+*.md
+app/android/.gradle
