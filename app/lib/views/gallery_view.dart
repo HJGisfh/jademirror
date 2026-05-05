@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../utils/app_theme.dart';
+import '../utils/api_image_url.dart';
 import '../widgets/common_widgets.dart';
 import '../providers/user_provider.dart';
 import '../models/jade_models.dart';
 import '../services/gallery_storage_service.dart';
+import '../services/gallery_bus.dart';
+import '../services/server_config.dart';
 
 class GalleryView extends StatefulWidget {
   final VoidCallback onBack;
@@ -18,11 +21,44 @@ class GalleryView extends StatefulWidget {
 class _GalleryViewState extends State<GalleryView> {
   int? _selectedIndex;
   late Future<List<GalleryArtwork>> _artworksFuture;
+  late final VoidCallback _galleryRevisionListener;
+
+  Future<List<GalleryArtwork>> _loadResolvedArtworks() async {
+    final base = await ServerConfig.loadUrl();
+    final raw = await GalleryStorageService().loadArtworks();
+    return raw
+        .map(
+          (a) => GalleryArtwork(
+            id: a.id,
+            jadeName: a.jadeName,
+            imageUrl: resolveArtworkImageUrlWithBase(a.imageUrl, base),
+            prompt: a.prompt,
+            jadeDescription: a.jadeDescription,
+            jadeDynasty: a.jadeDynasty,
+            createdAt: a.createdAt,
+          ),
+        )
+        .toList();
+  }
+
+  void _reloadArtworks() {
+    setState(() {
+      _artworksFuture = _loadResolvedArtworks();
+    });
+  }
 
   @override
   void initState() {
     super.initState();
-    _artworksFuture = GalleryStorageService().loadArtworks();
+    _artworksFuture = _loadResolvedArtworks();
+    _galleryRevisionListener = () => _reloadArtworks();
+    GalleryBus.revision.addListener(_galleryRevisionListener);
+  }
+
+  @override
+  void dispose() {
+    GalleryBus.revision.removeListener(_galleryRevisionListener);
+    super.dispose();
   }
 
   @override
@@ -84,7 +120,7 @@ class _GalleryViewState extends State<GalleryView> {
             ),
             const SizedBox(height: AppSpacing.sm),
             Text(
-              '完成照心测试后，可在结果页生成玉像并收藏至此',
+              '在「生成」页生成玉像后点「收藏至展厅」，作品会保存在本机；从底部进入展厅即可查看。',
               textAlign: TextAlign.center,
               style: TextStyle(fontSize: 14, color: AppColors.ink400, height: 1.5),
             ),
@@ -451,10 +487,8 @@ class _GalleryViewState extends State<GalleryView> {
 
   void _deleteArtwork(GalleryArtwork artwork) async {
     await GalleryStorageService().deleteArtwork(artwork.id);
-    setState(() {
-      _artworksFuture = GalleryStorageService().loadArtworks();
-      _selectedIndex = null;
-    });
+    if (mounted) setState(() => _selectedIndex = null);
+    GalleryBus.notifySaved();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: const Text('已移除藏品'),

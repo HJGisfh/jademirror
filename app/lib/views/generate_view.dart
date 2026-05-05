@@ -8,6 +8,9 @@ import '../providers/auth_provider.dart';
 import '../providers/user_provider.dart';
 import '../services/http_service.dart';
 import '../services/gallery_storage_service.dart';
+import '../services/gallery_bus.dart';
+import '../services/server_config.dart';
+import '../utils/api_image_url.dart';
 
 class GenerateView extends StatefulWidget {
   final VoidCallback onBack;
@@ -354,10 +357,13 @@ class _GenerateViewState extends State<GenerateView> {
     if (jade == null) return;
 
     try {
+      final apiBase = await ServerConfig.loadUrl();
+      final resolvedUrl = resolveArtworkImageUrlWithBase(_generatedImageUrl!, apiBase);
+
       final artwork = GalleryArtwork(
         id: const Uuid().v4(),
         jadeName: jade.name,
-        imageUrl: _generatedImageUrl!,
+        imageUrl: resolvedUrl,
         prompt: '${jade.name}生成玉像',
         jadeDescription: jade.description,
         jadeDynasty: jade.dynasty,
@@ -365,11 +371,12 @@ class _GenerateViewState extends State<GenerateView> {
       );
 
       await GalleryStorageService().saveArtwork(artwork);
+      GalleryBus.notifySaved();
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('"${jade.name}" 已收藏至展厅'),
+            content: Text('"${jade.name}" 已收藏至展厅（本地）'),
             duration: const Duration(seconds: 2),
             behavior: SnackBarBehavior.floating,
             margin: const EdgeInsets.symmetric(horizontal: 32, vertical: 12),

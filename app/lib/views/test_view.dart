@@ -5,15 +5,20 @@ import '../widgets/common_widgets.dart';
 import '../widgets/question_card.dart';
 import '../providers/user_provider.dart';
 import '../data/questions.dart';
+import 'home_view.dart';
 
 class TestView extends StatefulWidget {
   final VoidCallback onComplete;
   final VoidCallback onBack;
+  final VoidCallback onViewResult;
+  final VoidCallback onOpenChat;
 
   const TestView({
     super.key,
     required this.onComplete,
     required this.onBack,
+    required this.onViewResult,
+    required this.onOpenChat,
   });
 
   @override
@@ -31,50 +36,25 @@ class _TestViewState extends State<TestView> {
     final questions = provider.currentQuestions;
     final total = questions.length;
 
-    // If the test mode changed since last build, reset the index to start fresh.
     final currentMode = provider.testMode;
     if (_lastTestMode != currentMode) {
       _lastTestMode = currentMode;
       _currentIndex = 0;
     }
 
-    // Clamp the current index to valid range in case question set changed.
     if (total > 0 && _currentIndex >= total) {
       _currentIndex = total - 1;
     }
 
+    // 照心首页：未选深度/极简时展示原首页（玉璧、开始照心、模式卡片）
     if (questions.isEmpty) {
-      return JadeBackground(
-        child: Scaffold(
-          backgroundColor: Colors.transparent,
-          appBar: AppBar(
-            backgroundColor: Colors.transparent,
-            elevation: 0,
-            leading: IconButton(
-              icon: const Icon(Icons.arrow_back_ios_new, size: 20),
-              onPressed: widget.onBack,
-            ),
-            title: const Text('测试准备', style: TextStyle(fontSize: 16)),
-          ),
-          body: Center(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text('尚未选择测试模式', style: TextStyle(fontSize: 14, color: AppColors.ink500)),
-                const SizedBox(height: AppSpacing.md),
-                JadeButton(
-                  label: '返回首页',
-                  isPrimary: false,
-                  onPressed: widget.onBack,
-                ),
-              ],
-            ),
-          ),
-        ),
+      return HomeView(
+        onStartTest: () => setState(() {}),
+        onViewResult: widget.onViewResult,
+        onOpenChat: widget.onOpenChat,
       );
     }
 
-    // Safety: ensure index is within bounds before accessing list.
     final current = questions[_currentIndex.clamp(0, total - 1)];
     final selectedValue = provider.testAnswers[current.id];
 
@@ -90,12 +70,12 @@ class _TestViewState extends State<TestView> {
               if (_currentIndex > 0) {
                 setState(() => _currentIndex--);
               } else {
-                widget.onBack();
+                context.read<UserProvider>().exitTestToIntro();
               }
             },
           ),
           title: Text(
-            provider.testMode == 'deep' ? '拾陆问' : '陆问',
+            provider.testMode == 'deep' ? '照心 · 拾陆问' : '照心 · 陆问',
             style: const TextStyle(fontSize: 16),
           ),
           actions: [

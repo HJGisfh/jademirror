@@ -1,11 +1,20 @@
+import 'dart:async';
+import 'dart:io';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_tts/flutter_tts.dart';
 import 'package:provider/provider.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
+import 'package:speech_to_text/speech_recognition_error.dart';
 import '../utils/app_theme.dart';
 import '../widgets/common_widgets.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/jade_spirit_pet.dart';
 import '../providers/user_provider.dart';
 import '../providers/chat_provider.dart';
+import '../providers/voice_shell_controller.dart';
+import '../services/device_speech.dart';
 
 class ChatView extends StatefulWidget {
   final VoidCallback onBack;
@@ -22,8 +31,96 @@ class _ChatViewState extends State<ChatView> {
   final _focusNode = FocusNode();
   PetState _petState = PetState.idle;
 
+  final stt.SpeechToText _chatSpeech = stt.SpeechToText();
+  final FlutterTts _flutterTts = FlutterTts();
+  bool _chatSpeechReady = false;
+  bool _chatListening = false;
+  bool _holdDown = false;
+  bool _holdShellExclusive = false;
+  String _holdBuffer = '';
+  bool _autoSpeakReply = true;
+  bool _voiceBusy = false;
+  VoiceShellController? _voiceShell;
+  String _speechHint = '';
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _voiceShell = context.read<VoiceShellController>();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _initChatTts();
+    _initChatSpeech();
+  }
+
+  Future<void> _initChatTts() async {
+    try {
+      await _flutterTts.setLanguage('zh-CN');
+      await _flutterTts.setSpeechRate(0.45);
+      await _flutterTts.setVolume(1.0);
+      await _flutterTts.setPitch(1.0);
+    } catch (_) {}
+  }
+
+  Future<void> _initChatSpeech() async {
+    if (defaultTargetPlatform == TargetPlatform.windows) return;
+    try {
+      final ok = await DeviceSpeechInit.initSpeechToText(
+        _chatSpeech,
+        onStatus: (s) {
+          if (!mounted) return;
+          if (s == 'listening') {
+            setState(() {
+              _chatListening = true;
+              _petState = PetState.listening;
+            });
+          } else if (s == 'notListening') {
+            setState(() {
+              _chatListening = false;
+              if (!_holdDown && _petState == PetState.listening) {
+                _petState = PetState.idle;
+              }
+            });
+          }
+        },
+        onError: (SpeechRecognitionError e) {
+          if (!mounted) return;
+          setState(() {
+            _chatListening = false;
+            _petState = PetState.idle;
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('语音识别：${e.errorMsg}')),
+          );
+        },
+      );
+      if (mounted) {
+        setState(() {
+          _chatSpeechReady = ok;
+          _speechHint = ok ? '' : DeviceSpeechInit.unavailableUserHint();
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _chatSpeechReady = false;
+          _speechHint = DeviceSpeechInit.unavailableUserHint();
+        });
+      }
+    }
+  }
+
   @override
   void dispose() {
+    if (_holdShellExclusive) {
+      _voiceShell?.endExclusiveVoiceSession();
+      _holdShellExclusive = false;
+    }
+    unawaited(_chatSpeech.stop());
+    unawaited(_flutterTts.stop());
     _textController.dispose();
     _scrollController.dispose();
     _focusNode.dispose();
@@ -43,15 +140,161 @@ class _ChatViewState extends State<ChatView> {
   }
 
   String _getStatusText() {
+    if (!_chatSpeechReady) {
+      if (defaultTargetPlatform == TargetPlatform.windows) {
+        return '当前平台不支持语音输入';
+      }
+      return _speechHint.isNotEmpty ? '语音不可用，见下方说明' : '正在准备麦克风…';
+    }
     switch (_petState) {
       case PetState.listening:
-        return '正在聆听...';
+        return _holdDown ? '按住说话中…' : '正在聆听…';
       case PetState.thinking:
         return '正在思考...';
       case PetState.speaking:
         return '正在回应...';
       case PetState.idle:
-        return '等待你的提问';
+        return '可文字或语音与玉交流';
+    }
+  }
+
+  void _mergeTranscript(String transcript) {
+    final t = transcript.trim();
+    if (t.isEmpty) return;
+    final cur = _textController.text.trim();
+    _textController.text = cur.isEmpty ? t : '$cur $t';
+    _textController.selection = TextSelection.collapsed(offset: _textController.text.length);
+  }
+
+  Future<void> _runExclusiveVoice(Future<void> Function() body) async {
+    final shell = _voiceShell ?? context.read<VoiceShellController>();
+    shell.beginExclusiveVoiceSession();
+    setState(() => _voiceBusy = true);
+    try {
+      await body();
+    } finally {
+      shell.endExclusiveVoiceSession();
+      if (mounted) setState(() => _voiceBusy = false);
+    }
+  }
+
+  Future<void> _voiceInputOnce() async {
+    if (!_chatSpeechReady || _voiceBusy) {
+      if (!_chatSpeechReady) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('当前设备不支持或未授权语音识别')),
+        );
+      }
+      return;
+    }
+
+    await _runExclusiveVoice(() async {
+      await _chatSpeech.stop();
+      await Future.delayed(const Duration(milliseconds: 120));
+      final completer = Completer<String>();
+      var settled = false;
+
+      void finish(String v) {
+        if (settled) return;
+        settled = true;
+        if (!completer.isCompleted) completer.complete(v);
+      }
+
+      await _chatSpeech.listen(
+        localeId: 'zh_CN',
+        listenOptions: stt.SpeechListenOptions(listenMode: stt.ListenMode.confirmation),
+        onResult: (result) {
+          final words = result.recognizedWords.trim();
+          if (words.isEmpty) return;
+          if (result.finalResult) {
+            finish(words);
+            unawaited(_chatSpeech.stop());
+          }
+        },
+      );
+
+      final text = await completer.future.timeout(
+        const Duration(seconds: 25),
+        onTimeout: () {
+          unawaited(_chatSpeech.stop());
+          return '';
+        },
+      );
+      _mergeTranscript(text);
+    });
+  }
+
+  Future<void> _holdPointerDown() async {
+    if (!_chatSpeechReady || _voiceBusy) return;
+    setState(() {
+      _holdDown = true;
+      _petState = PetState.listening;
+      _holdBuffer = '';
+    });
+    final shell = _voiceShell ?? context.read<VoiceShellController>();
+    shell.beginExclusiveVoiceSession();
+    _holdShellExclusive = true;
+    try {
+      await _chatSpeech.stop();
+      await Future.delayed(const Duration(milliseconds: 80));
+      await _chatSpeech.listen(
+        localeId: 'zh_CN',
+        listenOptions: stt.SpeechListenOptions(listenMode: stt.ListenMode.dictation),
+        onResult: (r) {
+          _holdBuffer = r.recognizedWords;
+        },
+      );
+    } catch (_) {
+      await _chatSpeech.stop();
+      if (_holdShellExclusive) {
+        shell.endExclusiveVoiceSession();
+        _holdShellExclusive = false;
+      }
+      if (mounted) {
+        setState(() {
+          _holdDown = false;
+          _petState = PetState.idle;
+        });
+      }
+    }
+  }
+
+  Future<void> _holdPointerUp() async {
+    await _chatSpeech.stop();
+    if (_holdShellExclusive && mounted) {
+      (_voiceShell ?? context.read<VoiceShellController>()).endExclusiveVoiceSession();
+      _holdShellExclusive = false;
+    }
+    if (!_holdDown) return;
+    setState(() => _holdDown = false);
+    final t = _holdBuffer.trim();
+    if (t.isNotEmpty) {
+      _mergeTranscript(t);
+    }
+    if (mounted) setState(() => _petState = PetState.idle);
+  }
+
+  Future<void> _stopChatListen() async {
+    await _chatSpeech.stop();
+    if (mounted) {
+      setState(() {
+        _chatListening = false;
+        _holdDown = false;
+        _petState = PetState.idle;
+      });
+    }
+  }
+
+  Future<void> _speakLatestAssistant(ChatProvider chatProvider) async {
+    if (!_autoSpeakReply) return;
+    for (final m in chatProvider.messages.reversed) {
+      if (!m.isUser && m.content.trim().isNotEmpty) {
+        try {
+          await _flutterTts.stop();
+          await _flutterTts.speak(m.content.trim());
+        } catch (_) {}
+        break;
+      }
     }
   }
 
@@ -84,6 +327,11 @@ class _ChatViewState extends State<ChatView> {
           centerTitle: true,
           actions: [
             IconButton(
+              icon: Icon(_autoSpeakReply ? Icons.volume_up_outlined : Icons.volume_off_outlined, size: 20),
+              tooltip: '自动播报玉音',
+              onPressed: () => setState(() => _autoSpeakReply = !_autoSpeakReply),
+            ),
+            IconButton(
               icon: const Icon(Icons.delete_outline, size: 20),
               onPressed: () => chatProvider.clearMessages(),
             ),
@@ -96,6 +344,45 @@ class _ChatViewState extends State<ChatView> {
               state: _petState,
               statusText: _getStatusText(),
             ),
+            if (!_chatSpeechReady &&
+                _speechHint.isNotEmpty &&
+                (Platform.isAndroid || Platform.isIOS))
+              Padding(
+                padding: const EdgeInsets.fromLTRB(AppSpacing.md, 0, AppSpacing.md, AppSpacing.sm),
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: AppColors.jade100.withValues(alpha: 0.65),
+                    borderRadius: BorderRadius.circular(AppRadius.md),
+                    border: Border.all(color: AppColors.jade300),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(AppSpacing.sm),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          _speechHint,
+                          style: TextStyle(fontSize: 12, height: 1.35, color: AppColors.ink600),
+                        ),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 8,
+                          children: [
+                            TextButton(
+                              onPressed: () => DeviceSpeechInit.openAppPermissionSettings(),
+                              child: const Text('打开应用设置'),
+                            ),
+                            TextButton(
+                              onPressed: () => unawaited(_initChatSpeech()),
+                              child: const Text('重试语音'),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
             Expanded(
               child: ListView(
                 controller: _scrollController,
@@ -260,109 +547,128 @@ class _ChatViewState extends State<ChatView> {
           color: AppColors.paper.withValues(alpha: 0.95),
           border: Border(top: BorderSide(color: AppColors.cardBorder)),
         ),
-        child: Row(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            _buildVoiceButton(chatProvider, userProvider),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Container(
-                constraints: const BoxConstraints(maxHeight: 100),
-                child: TextField(
-                  controller: _textController,
-                  focusNode: _focusNode,
-                  maxLines: null,
-                  keyboardType: TextInputType.multiline,
-                  textInputAction: TextInputAction.send,
-                  onSubmitted: (_) => _handleSend(chatProvider, userProvider),
-                  decoration: InputDecoration(
-                    hintText: '向古玉提问...',
-                    hintStyle: TextStyle(color: AppColors.ink400, fontSize: 14),
-                    filled: true,
-                    fillColor: AppColors.jade100.withValues(alpha: 0.5),
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 10,
-                    ),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(AppRadius.pill),
-                      borderSide: BorderSide.none,
-                    ),
-                    enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(AppRadius.pill),
-                      borderSide: BorderSide.none,
-                    ),
-                    focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(AppRadius.pill),
-                      borderSide: BorderSide(color: AppColors.ink600.withValues(alpha: 0.3)),
+            if (_chatSpeechReady) ...[
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: chatProvider.isSending || _voiceBusy || _holdDown
+                          ? null
+                          : () => unawaited(_voiceInputOnce()),
+                      icon: Icon(
+                        _voiceBusy ? Icons.hourglass_top : Icons.mic_none,
+                        size: 18,
+                        color: AppColors.ink600,
+                      ),
+                      label: Text(_voiceBusy ? '聆听中…' : '语音输入'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppColors.ink700,
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                      ),
                     ),
                   ),
-                  style: TextStyle(fontSize: 14, color: AppColors.ink900),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Listener(
+                      onPointerDown: (_) => unawaited(_holdPointerDown()),
+                      onPointerUp: (_) => unawaited(_holdPointerUp()),
+                      onPointerCancel: (_) => unawaited(_holdPointerUp()),
+                      child: Material(
+                        color: _holdDown ? AppColors.petListening.withValues(alpha: 0.25) : AppColors.jade100,
+                        borderRadius: BorderRadius.circular(AppRadius.pill),
+                        child: Container(
+                          alignment: Alignment.center,
+                          padding: const EdgeInsets.symmetric(vertical: 10),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(AppRadius.pill),
+                            border: Border.all(
+                              color: _holdDown ? AppColors.petListening : AppColors.jade300,
+                            ),
+                          ),
+                          child: Text(
+                            _holdDown ? '松开结束' : '按住说话',
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: _holdDown ? AppColors.petListening : AppColors.ink700,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    tooltip: '停止聆听',
+                    onPressed: _chatListening ? () => unawaited(_stopChatListen()) : null,
+                    icon: const Icon(Icons.stop_circle_outlined),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+            ],
+            Row(
+              children: [
+                Expanded(
+                  child: Container(
+                    constraints: const BoxConstraints(maxHeight: 100),
+                    child: TextField(
+                      controller: _textController,
+                      focusNode: _focusNode,
+                      maxLines: null,
+                      keyboardType: TextInputType.multiline,
+                      textInputAction: TextInputAction.send,
+                      onSubmitted: (_) => _handleSend(chatProvider, userProvider),
+                      decoration: InputDecoration(
+                        hintText: '向古玉提问...',
+                        hintStyle: TextStyle(color: AppColors.ink400, fontSize: 14),
+                        filled: true,
+                        fillColor: AppColors.jade100.withValues(alpha: 0.5),
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 10,
+                        ),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(AppRadius.pill),
+                          borderSide: BorderSide.none,
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(AppRadius.pill),
+                          borderSide: BorderSide.none,
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(AppRadius.pill),
+                          borderSide: BorderSide(color: AppColors.ink600.withValues(alpha: 0.3)),
+                        ),
+                      ),
+                      style: TextStyle(fontSize: 14, color: AppColors.ink900),
+                    ),
+                  ),
                 ),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Container(
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: [AppColors.primaryGradientStart, AppColors.primaryGradientEnd],
+                const SizedBox(width: 8),
+                Container(
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [AppColors.primaryGradientStart, AppColors.primaryGradientEnd],
+                    ),
+                    shape: BoxShape.circle,
+                  ),
+                  child: IconButton(
+                    icon: const Icon(Icons.send_rounded, size: 20, color: Color(0xFFf6f7f5)),
+                    onPressed: chatProvider.isSending
+                        ? null
+                        : () => _handleSend(chatProvider, userProvider),
+                  ),
                 ),
-                shape: BoxShape.circle,
-              ),
-              child: IconButton(
-                icon: const Icon(Icons.send_rounded, size: 20, color: Color(0xFFf6f7f5)),
-                onPressed: chatProvider.isSending
-                    ? null
-                    : () => _handleSend(chatProvider, userProvider),
-              ),
+              ],
             ),
           ],
         ),
       ),
     );
-  }
-
-  Widget _buildVoiceButton(ChatProvider chatProvider, UserProvider userProvider) {
-    final isListening = _petState == PetState.listening;
-
-    return GestureDetector(
-      onTap: () => _toggleListening(chatProvider, userProvider),
-      child: Container(
-        width: 44,
-        height: 44,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: isListening ? AppColors.petListening.withValues(alpha: 0.2) : AppColors.jade100,
-          border: Border.all(
-            color: isListening ? AppColors.petListening : AppColors.jade300,
-            width: isListening ? 2 : 1,
-          ),
-        ),
-        child: Icon(
-          isListening ? Icons.mic : Icons.mic_none,
-          size: 22,
-          color: isListening ? AppColors.petListening : AppColors.ink500,
-        ),
-      ),
-    );
-  }
-
-  void _toggleListening(ChatProvider chatProvider, UserProvider userProvider) {
-    if (_petState == PetState.listening) {
-      setState(() => _petState = PetState.idle);
-    } else {
-      setState(() => _petState = PetState.listening);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('语音识别尚未接入，当前为演示模式。'),
-          duration: Duration(seconds: 2),
-        ),
-      );
-      Future.delayed(const Duration(seconds: 2), () {
-        if (mounted && _petState == PetState.listening) {
-          setState(() => _petState = PetState.idle);
-        }
-      });
-    }
   }
 
   void _handleSend(ChatProvider chatProvider, UserProvider userProvider) {
@@ -382,17 +688,20 @@ class _ChatViewState extends State<ChatView> {
         : null;
 
     setState(() => _petState = PetState.thinking);
-    chatProvider.sendMessage(
-      text,
-      systemPrompt: systemPrompt,
-      jade: jade,
-      matchReason: matchReason,
-    ).then((_) {
+    unawaited(_flutterTts.stop());
+    chatProvider
+        .sendMessage(
+          text,
+          systemPrompt: systemPrompt,
+          jade: jade,
+          matchReason: matchReason,
+        )
+        .then((_) async {
+      if (!mounted) return;
+      setState(() => _petState = PetState.speaking);
+      await _speakLatestAssistant(chatProvider);
       if (mounted) {
-        setState(() => _petState = PetState.speaking);
-        Future.delayed(const Duration(seconds: 2), () {
-          if (mounted) setState(() => _petState = PetState.idle);
-        });
+        setState(() => _petState = PetState.idle);
       }
     });
     _scrollToBottom();

@@ -1,8 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../models/app_screen.dart';
+import '../providers/companion_provider.dart';
+import '../providers/voice_shell_controller.dart';
 import '../utils/app_theme.dart';
 import '../utils/voice_commands.dart';
-import '../views/home_view.dart';
 import '../views/test_view.dart';
 import '../views/result_view.dart';
 import '../views/chat_view.dart';
@@ -13,20 +17,8 @@ import '../views/login_view.dart';
 import '../providers/user_provider.dart';
 import '../providers/chat_provider.dart';
 import '../providers/auth_provider.dart';
-import '../services/server_config.dart';
 import 'jade_spirit_pet.dart';
 import 'voice_command_bar.dart';
-
-enum AppScreen {
-  home,
-  test,
-  result,
-  chat,
-  generate,
-  gallery,
-  me,
-  login,
-}
 
 class JadeAppShell extends StatefulWidget {
   const JadeAppShell({super.key});
@@ -40,23 +32,109 @@ class JadeAppShell extends StatefulWidget {
 }
 
 class JadeAppShellState extends State<JadeAppShell> with TickerProviderStateMixin {
-  AppScreen _currentScreen = AppScreen.home;
+  AppScreen _currentScreen = AppScreen.test;
   bool _isAnimating = false;
-  bool _showServerWarning = false;
+  /// 玉灵童子悬浮条相对默认锚点的平移（像素）。
+  Offset _voiceBarPanOffset = Offset.zero;
+  /// 字幕面板展开时占位更高，便于拖动边界计算。
+  bool _voiceCaptionsExpanded = false;
+
+  AppScreen get currentScreen => _currentScreen;
 
   @override
   void initState() {
     super.initState();
-    _checkServerConfig();
+    WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(_wireCompanion()));
   }
 
-  Future<void> _checkServerConfig() async {
-    final configured = await ServerConfig.isConfigured();
+  Future<void> _wireCompanion() async {
     if (!mounted) return;
-    setState(() => _showServerWarning = !configured);
+    final companion = context.read<CompanionProvider>();
+    companion.onNavigate = _onAssistantNavigate;
+    companion.onLegacyVoiceFallback = _handleVoiceCommand;
+    await companion.loadPersistedSettings();
+    if (!mounted) return;
+    companion.syncStageFromAppScreen(_currentScreen);
+    await companion.welcomeIfNeeded();
   }
 
-  AppScreen get currentScreen => _currentScreen;
+  void _onAssistantNavigate(CompanionNavigateEvent e) {
+    if (!mounted) return;
+    final companion = context.read<CompanionProvider>();
+    if (!companion.autoGuide) return;
+
+    var route = e.suggestedRoute;
+    if (route.isEmpty) {
+      switch (e.nextAction) {
+        case 'start_test':
+        case 'continue_test':
+          route = '/test';
+          break;
+        case 'show_result':
+          route = '/result';
+          break;
+        case 'go_chat':
+        case 'free_chat':
+          route = '/chat';
+          break;
+        case 'go_generate':
+        case 'generate_jade':
+        case 'save_work':
+          route = '/generate';
+          break;
+        case 'go_gallery':
+        case 'delete_work':
+        case 'open_work':
+        case 'start_gallery_tour':
+        case 'next_gallery_item':
+        case 'prev_gallery_item':
+        case 'stop_gallery_tour':
+          route = '/gallery';
+          break;
+        default:
+          return;
+      }
+    }
+
+    final userProvider = context.read<UserProvider>();
+    final locked = !userProvider.hasMatchedJade;
+
+    switch (route) {
+      case '/test':
+        navigateTo(AppScreen.test);
+        break;
+      case '/result':
+        if (userProvider.hasMatchedJade) {
+          navigateTo(AppScreen.result);
+        } else {
+          navigateTo(AppScreen.test);
+        }
+        break;
+      case '/chat':
+        if (locked) {
+          _showLockToast();
+        } else {
+          navigateTo(AppScreen.chat);
+        }
+        break;
+      case '/generate':
+        if (locked) {
+          _showLockToast();
+        } else {
+          navigateTo(AppScreen.generate);
+        }
+        break;
+      case '/gallery':
+        if (locked) {
+          _showLockToast();
+        } else {
+          navigateTo(AppScreen.gallery);
+        }
+        break;
+      default:
+        break;
+    }
+  }
 
   void navigateTo(AppScreen screen) {
     if (_isAnimating || screen == _currentScreen) return;
@@ -73,6 +151,10 @@ class JadeAppShellState extends State<JadeAppShell> with TickerProviderStateMixi
       _currentScreen = screen;
     });
 
+    if (mounted) {
+      context.read<CompanionProvider>().syncStageFromAppScreen(screen);
+    }
+
     Future.delayed(const Duration(milliseconds: 380), () {
       if (mounted) setState(() => _isAnimating = false);
     });
@@ -88,10 +170,8 @@ class JadeAppShellState extends State<JadeAppShell> with TickerProviderStateMixi
       case AppScreen.test:
       case AppScreen.login:
       case AppScreen.me:
-        navigateTo(AppScreen.home);
+        navigateTo(AppScreen.test);
         break;
-      default:
-        return;
     }
   }
 
@@ -125,7 +205,7 @@ class JadeAppShellState extends State<JadeAppShell> with TickerProviderStateMixi
         }
         break;
       case VoiceCommandType.goHome:
-        navigateTo(AppScreen.home);
+        navigateTo(AppScreen.test);
         break;
       case VoiceCommandType.openChat:
         if (userProvider.hasMatchedJade) {
@@ -149,7 +229,7 @@ class JadeAppShellState extends State<JadeAppShell> with TickerProviderStateMixi
         break;
       case VoiceCommandType.resetTest:
         userProvider.resetTest();
-        navigateTo(AppScreen.home);
+        navigateTo(AppScreen.test);
         break;
       case VoiceCommandType.selectOption:
       case VoiceCommandType.nextQuestion:
@@ -173,46 +253,16 @@ class JadeAppShellState extends State<JadeAppShell> with TickerProviderStateMixi
     );
   }
 
-  Widget _buildServerWarningBanner() {
-    return Material(
-      borderRadius: BorderRadius.circular(AppRadius.md),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        decoration: BoxDecoration(
-          color: AppColors.warnGradientStart.withValues(alpha: 0.92),
-          borderRadius: BorderRadius.circular(AppRadius.md),
-          boxShadow: [
-            BoxShadow(
-              color: AppColors.warnGradientStart.withValues(alpha: 0.25),
-              blurRadius: 12,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: Row(
-          children: [
-            const Icon(Icons.link_off, size: 18, color: Colors.white),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                '未配置服务器地址\n前往"我" → 服务器地址 → 输入电脑局域网IP',
-                style: const TextStyle(fontSize: 12, color: Colors.white, height: 1.4),
-              ),
-            ),
-            GestureDetector(
-              onTap: () {
-                setState(() => _showServerWarning = false);
-              },
-              child: const Icon(Icons.close, size: 16, color: Colors.white70),
-            ),
-          ],
-        ),
-      ),
+  void _clampVoiceBarPan(MediaQueryData mq) {
+    const barW = 340.0;
+    final barH = _voiceCaptionsExpanded ? 420.0 : 200.0;
+    final s = mq.size;
+    final pad = mq.padding;
+    final bottomAnchor = mq.viewInsets.bottom + (_showBottomNav ? 80.0 : 20.0);
+    _voiceBarPanOffset = Offset(
+      _voiceBarPanOffset.dx.clamp(-(s.width - barW - 16), 16),
+      _voiceBarPanOffset.dy.clamp(-(s.height - bottomAnchor - barH - pad.top - 8), 24),
     );
-  }
-
-  void dismissServerWarning() {
-    if (mounted) setState(() => _showServerWarning = false);
   }
 
   void _showLockToast() {
@@ -230,7 +280,6 @@ class JadeAppShellState extends State<JadeAppShell> with TickerProviderStateMixi
 
   bool get _showBottomNav {
     switch (_currentScreen) {
-      case AppScreen.home:
       case AppScreen.test:
       case AppScreen.chat:
       case AppScreen.gallery:
@@ -260,32 +309,45 @@ class JadeAppShellState extends State<JadeAppShell> with TickerProviderStateMixi
       child: Scaffold(
         backgroundColor: Colors.transparent,
         body: SafeArea(
-          child: Stack(
-            children: [
-              _buildScreenStack(),
-              if (_showServerWarning)
-                Positioned(
-                  top: 0,
-                  left: 12,
-                  right: 12,
-                  child: _buildServerWarningBanner(),
-                ),
-              // 玉灵宠物始终保持悬浮，可全程交互
-              Positioned(
-                right: 12,
-                bottom: MediaQuery.of(context).viewInsets.bottom + (_showBottomNav ? 80 : 20),
-                child: SizedBox(
-                  width: 320,
-                  child: VoiceCommandBar(
-                    title: '玉灵童子',
-                    hintText: '说出指令：开始照心、返回首页、打开对话',
-                    petState: hasJade ? PetState.idle : PetState.thinking,
-                    autoStartListening: true,
-                    onCommand: _handleVoiceCommand,
+          child: Builder(
+            builder: (context) {
+              final mq = MediaQuery.of(context);
+              final voiceShell = context.watch<VoiceShellController>();
+              final companion = context.watch<CompanionProvider>();
+              return Stack(
+                children: [
+                  _buildScreenStack(),
+                  Positioned(
+                    right: 12,
+                    bottom: mq.viewInsets.bottom + (_showBottomNav ? 80 : 20),
+                    child: Transform.translate(
+                      offset: _voiceBarPanOffset,
+                      child: VoiceCommandBar(
+                        companion: companion,
+                        voiceShell: voiceShell,
+                        title: '玉灵童子',
+                        hintText: '自动监听时，说完话静音片刻即发送；点小动物打开设置。',
+                        petState: hasJade ? PetState.idle : PetState.thinking,
+                        onVoiceShellSuppressChanged: (suppressed) {
+                          context.read<CompanionProvider>().setListeningSuppressed(suppressed);
+                        },
+                        onCaptionsExpandedChanged: (expanded) {
+                          setState(() => _voiceCaptionsExpanded = expanded);
+                          _clampVoiceBarPan(mq);
+                        },
+                        onUserSpeech: (text) => companion.handleUserText(text),
+                        onPetPanUpdate: (details) {
+                          setState(() {
+                            _voiceBarPanOffset += details.delta;
+                            _clampVoiceBarPan(mq);
+                          });
+                        },
+                      ),
+                    ),
                   ),
-                ),
-              ),
-            ],
+                ],
+              );
+            },
           ),
         ),
         bottomNavigationBar: _showBottomNav
@@ -293,7 +355,6 @@ class JadeAppShellState extends State<JadeAppShell> with TickerProviderStateMixi
                 currentScreen: _currentScreen,
                 hasJade: hasJade,
                 isLoggedIn: authProvider.isLoggedIn,
-                onHomeTap: () => navigateTo(AppScreen.home),
                 onTestTap: () => navigateTo(AppScreen.test),
                 onChatTap: () => navigateTo(AppScreen.chat),
                 onGalleryTap: () => navigateTo(AppScreen.gallery),
@@ -310,18 +371,12 @@ class JadeAppShellState extends State<JadeAppShell> with TickerProviderStateMixi
     return Stack(
       children: [
         _buildScreenPage(
-          screen: AppScreen.home,
-          builder: () => HomeView(
-            onStartTest: () => navigateTo(AppScreen.test),
-            onViewResult: () => navigateTo(AppScreen.result),
-            onOpenChat: () => navigateTo(AppScreen.chat),
-          ),
-        ),
-        _buildScreenPage(
           screen: AppScreen.test,
           builder: () => TestView(
             onComplete: () => navigateTo(AppScreen.result),
             onBack: () => goBack(),
+            onViewResult: () => navigateTo(AppScreen.result),
+            onOpenChat: () => navigateTo(AppScreen.chat),
           ),
         ),
         _buildScreenPage(
@@ -333,7 +388,7 @@ class JadeAppShellState extends State<JadeAppShell> with TickerProviderStateMixi
             onGallery: () => navigateTo(AppScreen.gallery),
             onRetest: () {
               userProvider.resetTest();
-              navigateTo(AppScreen.home);
+              navigateTo(AppScreen.test);
             },
           ),
         ),
@@ -352,7 +407,7 @@ class JadeAppShellState extends State<JadeAppShell> with TickerProviderStateMixi
         _buildScreenPage(
           screen: AppScreen.me,
           builder: () => MeView(
-            onBack: () => navigateTo(AppScreen.home),
+            onBack: () => navigateTo(AppScreen.test),
             onLogin: () => navigateTo(AppScreen.login),
           ),
         ),
@@ -401,7 +456,6 @@ class _AppBottomNav extends StatelessWidget {
   final AppScreen currentScreen;
   final bool hasJade;
   final bool isLoggedIn;
-  final VoidCallback onHomeTap;
   final VoidCallback onTestTap;
   final VoidCallback onChatTap;
   final VoidCallback onGalleryTap;
@@ -411,7 +465,6 @@ class _AppBottomNav extends StatelessWidget {
     required this.currentScreen,
     required this.hasJade,
     required this.isLoggedIn,
-    required this.onHomeTap,
     required this.onTestTap,
     required this.onChatTap,
     required this.onGalleryTap,
@@ -431,12 +484,6 @@ class _AppBottomNav extends StatelessWidget {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceAround,
           children: [
-            _NavItem(
-              active: currentScreen == AppScreen.home,
-              icon: Icons.home_outlined,
-              label: '首页',
-              onTap: onHomeTap,
-            ),
             _NavItem(
               active: currentScreen == AppScreen.test,
               icon: Icons.auto_awesome,

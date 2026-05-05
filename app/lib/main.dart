@@ -5,6 +5,8 @@ import 'utils/app_theme.dart';
 import 'providers/user_provider.dart';
 import 'providers/chat_provider.dart';
 import 'providers/auth_provider.dart';
+import 'providers/companion_provider.dart';
+import 'providers/voice_shell_controller.dart';
 import 'widgets/jade_app_shell.dart';
 
 void main() async {
@@ -53,6 +55,13 @@ class JadeMirrorApp extends StatelessWidget {
         ChangeNotifierProvider.value(value: authProvider),
         ChangeNotifierProvider.value(value: chatProvider),
         ChangeNotifierProvider(create: (_) => UserProvider()),
+        ChangeNotifierProvider(
+          create: (c) => CompanionProvider(
+            auth: c.read<AuthProvider>(),
+            user: c.read<UserProvider>(),
+          ),
+        ),
+        ChangeNotifierProvider(create: (_) => VoiceShellController()),
       ],
       child: MaterialApp(
         title: 'JadeMirror',

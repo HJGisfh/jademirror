@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../providers/user_provider.dart';
-import '../views/home_view.dart';
 import '../views/test_view.dart';
 import '../views/result_view.dart';
 import '../views/chat_view.dart';
@@ -10,61 +9,58 @@ import '../views/gallery_view.dart';
 
 GoRouter createRouter(UserProvider userProvider) {
   return GoRouter(
-    initialLocation: '/',
+    initialLocation: '/test',
     routes: [
       GoRoute(
         path: '/',
-        name: 'home',
-        builder: (context, state) => HomeView(
-          onStartTest: () => context.go('/test'),
-          onViewResult: () => context.go('/result'),
-          onOpenChat: () => context.go('/chat'),
-        ),
+        redirect: (_, __) => '/test',
       ),
       GoRoute(
         path: '/test',
         name: 'test',
         builder: (context, state) => TestView(
           onComplete: () => context.go('/result'),
-          onBack: () => context.go('/'),
+          onBack: () => context.go('/test'),
+          onViewResult: () => context.go('/result'),
+          onOpenChat: () => context.go('/chat'),
         ),
       ),
       GoRoute(
         path: '/result',
         name: 'result',
         builder: (context, state) => ResultView(
-          onBack: () => context.go('/'),
+          onBack: () => context.go('/test'),
           onChat: () => context.go('/chat'),
           onGenerate: () => context.go('/generate'),
           onGallery: () => context.go('/gallery'),
           onRetest: () {
             userProvider.resetTest();
-            context.go('/');
+            context.go('/test');
           },
         ),
         redirect: (context, state) {
-          if (!userProvider.hasMatchedJade) return '/';
+          if (!userProvider.hasMatchedJade) return '/test';
           return null;
         },
       ),
       GoRoute(
         path: '/chat',
         name: 'chat',
-        builder: (context, state) => ChatView(onBack: () => context.go('/')),
+        builder: (context, state) => ChatView(onBack: () => context.go('/test')),
         redirect: (context, state) {
-          if (!userProvider.hasMatchedJade) return '/';
+          if (!userProvider.hasMatchedJade) return '/test';
           return null;
         },
       ),
       GoRoute(
         path: '/generate',
         name: 'generate',
-        builder: (context, state) => GenerateView(onBack: () => context.go('/')),
+        builder: (context, state) => GenerateView(onBack: () => context.go('/test')),
       ),
       GoRoute(
         path: '/gallery',
         name: 'gallery',
-        builder: (context, state) => GalleryView(onBack: () => context.go('/')),
+        builder: (context, state) => GalleryView(onBack: () => context.go('/test')),
       ),
     ],
     errorBuilder: (context, state) => Scaffold(
@@ -77,8 +73,8 @@ GoRouter createRouter(UserProvider userProvider) {
             const Text('页面未找到', style: TextStyle(fontSize: 18)),
             const SizedBox(height: 16),
             ElevatedButton(
-              onPressed: () => context.go('/'),
-              child: const Text('返回首页'),
+              onPressed: () => context.go('/test'),
+              child: const Text('返回照心'),
             ),
           ],
         ),

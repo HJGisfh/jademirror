@@ -45,7 +45,16 @@ class UserProvider extends ChangeNotifier {
 
   List<Question> get currentQuestions {
     if (_testMode == 'quick') return quickTestQuestions;
-    return deepTestQuestions;
+    if (_testMode == 'deep') return deepTestQuestions;
+    return [];
+  }
+
+  /// 回到照心介绍页（保留已匹配本命玉等结果，仅清空本题进度）。
+  void exitTestToIntro() {
+    _testMode = '';
+    _testAnswers = {};
+    _userVector = createZeroVector();
+    notifyListeners();
   }
 
   int get totalQuestions => currentQuestions.length;

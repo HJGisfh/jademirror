@@ -67,7 +67,11 @@ VoiceCommandMatch parseVoiceCommand(String input) {
     return VoiceCommandMatch(type: VoiceCommandType.resetTest, raw: input);
   }
 
-  if (text.contains('返回首页') || text.contains('回首页') || text.contains('回到首页')) {
+  if (text.contains('返回照心') ||
+      text.contains('回照心') ||
+      text.contains('返回首页') ||
+      text.contains('回首页') ||
+      text.contains('回到首页')) {
     return VoiceCommandMatch(type: VoiceCommandType.goHome, raw: input);
   }
 

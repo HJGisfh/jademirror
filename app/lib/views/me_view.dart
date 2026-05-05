@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../utils/app_theme.dart';
@@ -6,7 +7,6 @@ import '../providers/auth_provider.dart';
 import '../providers/chat_provider.dart';
 import '../providers/user_provider.dart';
 import '../services/server_config.dart';
-import '../widgets/jade_app_shell.dart';
 
 class MeView extends StatefulWidget {
   final VoidCallback onBack;
@@ -139,7 +139,6 @@ class _MeViewState extends State<MeView> {
         final chat = context.read<ChatProvider>();
         await auth.refreshServerUrl(loaded);
         await chat.refreshServerUrl(loaded);
-        JadeAppShell.of(context)?.dismissServerWarning();
         _showSnack('连接至 $loaded');
       } catch (e) {
         _showSnack('已保存，请重启应用以生效');
@@ -487,25 +486,32 @@ class _MeViewState extends State<MeView> {
               style: TextStyle(fontSize: 11, color: AppColors.ink400),
             ),
             const SizedBox(height: AppSpacing.sm),
-            _buildTextField(
-              controller: _serverController,
-              hint: '如 192.168.x.x:5000',
-              icon: Icons.link,
-            ),
-            const SizedBox(height: AppSpacing.xs),
-            Text(
-              '电脑 cmd 输入 ipconfig 查看 IPv4 地址',
-              style: TextStyle(fontSize: 10, color: AppColors.ink400.withValues(alpha: 0.6)),
-            ),
-            const SizedBox(height: AppSpacing.sm),
-            SizedBox(
-              width: double.infinity,
-              child: JadeButton(
-                label: '保存地址',
-                isPrimary: false,
-                onPressed: _saveServerUrl,
+            if (kReleaseMode) ...[
+              Text(
+                '正式版已内置云端 API，无需填写地址。换服务器请使用带 --dart-define=JADEMIRROR_API_BASE=… 的调试/定制构建。',
+                style: TextStyle(fontSize: 11, color: AppColors.ink500, height: 1.35),
               ),
-            ),
+            ] else ...[
+              _buildTextField(
+                controller: _serverController,
+                hint: '如 ${ServerConfig.productionHost.replaceAll('http://', '')}/api',
+                icon: Icons.link,
+              ),
+              const SizedBox(height: AppSpacing.xs),
+              Text(
+                '调试时可改成本机或局域网；默认同云端。',
+                style: TextStyle(fontSize: 10, color: AppColors.ink400.withValues(alpha: 0.6)),
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              SizedBox(
+                width: double.infinity,
+                child: JadeButton(
+                  label: '保存地址',
+                  isPrimary: false,
+                  onPressed: _saveServerUrl,
+                ),
+              ),
+            ],
           ],
         ],
       ),
