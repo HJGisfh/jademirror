@@ -319,6 +319,10 @@ export const useVoiceStore = defineStore('voice', {
       window.speechSynthesis.cancel()
       this.speaking = false
     },
+    ensureVoicesLoaded() {
+      if (typeof window === 'undefined' || !window.speechSynthesis) return
+      window.speechSynthesis.getVoices()
+    },
     speak(text) {
       this.speakWithMood(text, '')
     },
@@ -342,6 +346,7 @@ export const useVoiceStore = defineStore('voice', {
       }
 
       this.stopSpeaking()
+      this.ensureVoicesLoaded()
 
       const utter = new SpeechSynthesisUtterance(content)
       utter.lang = RECOGNITION_LANG
@@ -352,18 +357,53 @@ export const useVoiceStore = defineStore('voice', {
 
       utter.onstart = () => {
         this.speaking = true
+        this.lastError = ''
       }
 
       utter.onend = () => {
         this.speaking = false
       }
 
-      utter.onerror = () => {
+      utter.onerror = (event) => {
         this.speaking = false
+        const code = event?.error || ''
+        if (code === 'interrupted' || code === 'canceled') {
+          return
+        }
+        if (code === 'not-allowed') {
+          this.lastError = '语音播报需要与页面交互后才能播放，请点击页面后再试。'
+          return
+        }
+        if (code === 'audio-busy' || code === 'network') {
+          this.lastError = '语音引擎繁忙或网络异常，请稍后重试。'
+          return
+        }
+        if (code === 'synthesis-unavailable') {
+          this.lastError = '当前环境不支持语音合成。'
+          return
+        }
         this.lastError = '语音播报失败，请稍后重试。'
       }
 
-      window.speechSynthesis.speak(utter)
+      let started = false
+      const run = () => {
+        if (started) return
+        started = true
+        window.speechSynthesis.speak(utter)
+      }
+      if (window.speechSynthesis.getVoices().length === 0) {
+        const once = () => {
+          window.speechSynthesis.removeEventListener('voiceschanged', once)
+          run()
+        }
+        window.speechSynthesis.addEventListener('voiceschanged', once)
+        window.setTimeout(() => {
+          window.speechSynthesis.removeEventListener('voiceschanged', once)
+          run()
+        }, 400)
+      } else {
+        run()
+      }
     },
     startAutoListen(silenceThreshold = 1500) {
       this.init()

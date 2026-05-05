@@ -1,15 +1,24 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import GeneratedJadeViewer from '@/components/GeneratedJadeViewer.vue'
+import JadePhoto3DViewer from '@/components/JadePhoto3DViewer.vue'
 import { useApiStore } from '@/stores/apiStore'
+import { useAssistantStore } from '@/stores/assistantStore'
 import { useAudioStore } from '@/stores/audioStore'
 import { useUserStore } from '@/stores/userStore'
+import { useVoiceStore } from '@/stores/voiceStore'
 import { createFallbackJadeDataURL, urlToDataURL } from '@/utils/image'
 import { buildImagePrompt, buildMultiViewPrompts } from '@/utils/prompt'
 
+const router = useRouter()
 const userStore = useUserStore()
 const apiStore = useApiStore()
 const audioStore = useAudioStore()
+const assistantStore = useAssistantStore()
+const voiceStore = useVoiceStore()
+
+const genDraft = ref('')
 
 const jade = computed(() => userStore.matchedJade)
 
@@ -56,6 +65,8 @@ const saveNotice = ref('')
 const touchPulse = ref(false)
 const multiViewLoading = ref(false)
 const multiViewProgress = ref('')
+/** 仅单张生成图时：true=Three 平面立体预览，false=纯 2D 大图 */
+const usePhotoStereo = ref(true)
 
 const viewLabelMap = {
   front: '正面',
@@ -231,8 +242,64 @@ async function primeAudioOnce() {
   try { await audioStore.primeContext() } catch { pageError.value = '音频环境初始化失败。' }
 }
 
-onMounted(() => { window.addEventListener('pointerdown', primeAudioOnce, { once: true }) })
-onBeforeUnmount(() => { window.removeEventListener('pointerdown', primeAudioOnce) })
+async function sendGenDraft() {
+  const text = genDraft.value.trim()
+  if (!text || assistantStore.busy) return
+  genDraft.value = ''
+  await assistantStore.handleUserText(text, router)
+}
+
+async function genVoiceInputOnce() {
+  if (assistantStore.busy) return
+  voiceStore.stopSpeaking()
+  assistantStore.lastError = ''
+  voiceStore.lastError = ''
+  await assistantStore.listenAndHandle(router)
+}
+
+function genBeginHold() {
+  if (assistantStore.busy || voiceStore.holdListening || !voiceStore.recognitionSupported) return
+  voiceStore.startHoldListening()
+}
+
+async function genEndHold() {
+  if (!voiceStore.holdListening) return
+  const transcript = await voiceStore.stopHoldListening()
+  const text = String(transcript || '').trim()
+  if (text) {
+    await assistantStore.handleUserText(text, router)
+  }
+}
+
+function genStopListening() {
+  voiceStore.stopListening()
+}
+
+function genReplayAssistant() {
+  const latest = assistantStore.latestReply
+  const text = String(latest?.content || '').trim()
+  if (!text) {
+    assistantStore.lastError = '暂无可重播的玉灵回复。'
+    return
+  }
+  voiceStore.init()
+  voiceStore.setPersona(assistantStore.voicePersona)
+  voiceStore.speakWithMood(text, assistantStore.emotionalTone)
+}
+
+function toggleGenAutoSpeak() {
+  assistantStore.autoSpeak = !assistantStore.autoSpeak
+}
+
+onMounted(() => {
+  window.addEventListener('pointerdown', primeAudioOnce, { once: true })
+  voiceStore.init()
+  assistantStore.setCompanionMicSuppressed(true)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('pointerdown', primeAudioOnce)
+  assistantStore.setCompanionMicSuppressed(false)
+})
 </script>
 
 <template>
@@ -275,11 +342,17 @@ onBeforeUnmount(() => { window.removeEventListener('pointerdown', primeAudioOnce
 
     <article class="viewer-card jade-card">
       <div class="image-box" :class="{ active: touchPulse }">
+        <JadePhoto3DViewer
+          v-if="!modelUrl && multiViews.length === 0 && previewImage && usePhotoStereo"
+          :image-src="previewImage"
+          @trigger-sound="handleViewerSoundTrigger"
+        />
         <img
-          v-if="!modelUrl && multiViews.length === 0 && previewImage"
+          v-else-if="!modelUrl && multiViews.length === 0 && previewImage && !usePhotoStereo"
           :src="previewImage"
           alt="生成的专属玉图像"
           class="preview-image"
+          @click="replayTouchSound"
         />
         <GeneratedJadeViewer
           v-else-if="modelUrl || multiViews.length > 0"
@@ -295,18 +368,83 @@ onBeforeUnmount(() => { window.removeEventListener('pointerdown', primeAudioOnce
         <p class="text-muted viewer-tip">
           <template v-if="multiViews.length > 0">拖拽旋转查看3D立体效果，松手后惯性滑动，点击触发音效</template>
           <template v-else-if="modelUrl">拖拽旋转3D模型，点击触发音效</template>
-          <template v-else-if="previewImage"></template>
+          <template v-else-if="previewImage && usePhotoStereo">立体预览贴图与千问生成图一致，拖拽旋转、松手惯性滑动，点击触发音效</template>
+          <template v-else-if="previewImage && !usePhotoStereo">平面大图与生成图一致，点击图像可试听短音效</template>
           <template v-else>点击"生成专属玉"开始创作</template>
         </p>
+        <div class="viewer-actions">
+          <button
+            v-if="!modelUrl && multiViews.length === 0 && previewImage"
+            type="button"
+            class="jade-button secondary small"
+            @click="usePhotoStereo = !usePhotoStereo"
+          >
+            {{ usePhotoStereo ? '2D 平面图' : '立体预览' }}
+          </button>
+          <button
+            v-if="modelUrl || multiViews.length > 0"
+            type="button"
+            class="jade-button secondary small"
+            @click="switchToTextureView"
+          >
+            切换2D视图
+          </button>
+        </div>
+      </div>
+    </article>
+
+    <article v-if="jade" class="voice-card jade-card">
+      <p class="voice-card-title">与玉灵对话（本页优先使用麦克风）</p>
+      <div class="voice-toolbar">
         <button
-          v-if="modelUrl || multiViews.length > 0"
           type="button"
           class="jade-button secondary small"
-          @click="switchToTextureView"
+          :disabled="assistantStore.busy || !voiceStore.recognitionSupported"
+          @click="genVoiceInputOnce"
         >
-          切换2D视图
+          语音输入
+        </button>
+        <button
+          type="button"
+          class="jade-button secondary small"
+          :class="{ hold: voiceStore.holdListening }"
+          :disabled="assistantStore.busy || !voiceStore.recognitionSupported"
+          @pointerdown.prevent="genBeginHold"
+          @pointerup.prevent="genEndHold"
+          @pointerleave.prevent="genEndHold"
+          @pointercancel.prevent="genEndHold"
+        >
+          {{ voiceStore.holdListening ? '松开结束' : '按住说话' }}
+        </button>
+        <button type="button" class="jade-button secondary small" :disabled="!voiceStore.listening" @click="genStopListening">
+          停止聆听
+        </button>
+        <button type="button" class="jade-button secondary small" :disabled="!assistantStore.latestReply" @click="genReplayAssistant">
+          重播玉音
+        </button>
+        <button type="button" class="jade-button secondary small" :disabled="!voiceStore.speaking" @click="voiceStore.stopSpeaking()">
+          停止播报
+        </button>
+        <button
+          type="button"
+          class="jade-button secondary small"
+          :class="{ 'auto-speak-on': assistantStore.autoSpeak }"
+          @click="toggleGenAutoSpeak"
+        >
+          自动播报回复
         </button>
       </div>
+      <div class="gen-composer">
+        <textarea
+          v-model="genDraft"
+          rows="2"
+          placeholder="也可以说：保存到藏室 / 生成多视角 / 带我回首页..."
+          @keydown.enter.exact.prevent="sendGenDraft"
+        ></textarea>
+        <button type="button" class="jade-button primary small" :disabled="assistantStore.busy" @click="sendGenDraft">发送</button>
+      </div>
+      <p v-if="assistantStore.lastError" class="error-text">{{ assistantStore.lastError }}</p>
+      <p v-if="voiceStore.lastError" class="error-text">{{ voiceStore.lastError }}</p>
     </article>
 
     <article v-if="jade" class="prompt-card jade-card">
@@ -369,16 +507,24 @@ onBeforeUnmount(() => { window.removeEventListener('pointerdown', primeAudioOnce
   box-shadow: 0 14px 34px rgba(63, 112, 93, 0.2);
 }
 
+.placeholder-text {
+  font-size: 0.9rem;
+  opacity: 0.6;
+}
+
 .preview-image {
   max-width: 100%;
   max-height: 460px;
   border-radius: var(--radius-md);
   object-fit: contain;
+  cursor: pointer;
 }
 
-.placeholder-text {
-  font-size: 0.9rem;
-  opacity: 0.6;
+.viewer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  justify-content: flex-end;
 }
 
 .viewer-controls {
@@ -444,6 +590,52 @@ onBeforeUnmount(() => { window.removeEventListener('pointerdown', primeAudioOnce
 .jade-button.small {
   font-size: 0.78rem;
   padding: 0.3rem 0.7rem;
+}
+
+.voice-card {
+  padding: 0.85rem 1rem;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.voice-card-title {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--ink-700);
+}
+
+.voice-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.voice-toolbar .hold {
+  background: rgba(45, 89, 75, 0.9);
+  color: #eef6f2;
+  border-color: transparent;
+}
+
+.voice-toolbar .auto-speak-on {
+  background: rgba(45, 89, 75, 0.88);
+  color: #eef6f2;
+  border-color: transparent;
+}
+
+.gen-composer {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.gen-composer textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid rgba(56, 92, 79, 0.22);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.93);
+  padding: 0.5rem 0.65rem;
+  font-size: 0.86rem;
 }
 
 @media (max-width: 780px) {

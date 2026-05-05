@@ -187,7 +187,7 @@ function clearMeshes() {
       if (child.isMesh) {
         if (child.geometry) child.geometry.dispose()
         if (child.material) {
-          if (Array.isArray(child.material)) child.material.material.forEach((m) => m.dispose())
+          if (Array.isArray(child.material)) child.material.forEach((m) => m.dispose())
           else child.material.dispose()
         }
       }

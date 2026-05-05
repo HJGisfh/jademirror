@@ -62,7 +62,6 @@ export const useAssistantStore = defineStore('assistant', {
   state: () => ({
     ready: false,
     busy: false,
-    open: true,
     autoSpeak: true,
     autoGuide: true,
     privacyMode: false,
@@ -86,8 +85,11 @@ export const useAssistantStore = defineStore('assistant', {
     guidedTestActive: false,
     guidedQuestionIndex: 0,
     guidedTestMode: 'deep',
-    autoListen: false,
+    autoListen: true,
     silenceThreshold: 1500,
+    companionMicSuppressed: false,
+    companionToast: '',
+    companionToastTimer: 0,
   }),
   getters: {
     latestReply: (state) => {
@@ -209,15 +211,36 @@ export const useAssistantStore = defineStore('assistant', {
       }
     },
     appendMessage(role, content) {
+      const text = String(content || '')
       this.messages.push({
         id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
         role,
-        content: String(content || ''),
+        content: text,
       })
       if (this.messages.length > 50) {
         this.messages = this.messages.slice(-50)
       }
+      if (role === 'assistant' && text.trim()) {
+        this.showCompanionToast(text.trim())
+      }
       this.touchActivity()
+    },
+    showCompanionToast(message, durationMs = 5200) {
+      if (typeof window === 'undefined') return
+      const text = String(message || '').trim()
+      if (!text) return
+      if (this.companionToastTimer) {
+        window.clearTimeout(this.companionToastTimer)
+        this.companionToastTimer = 0
+      }
+      this.companionToast = text
+      this.companionToastTimer = window.setTimeout(() => {
+        this.companionToast = ''
+        this.companionToastTimer = 0
+      }, durationMs)
+    },
+    setCompanionMicSuppressed(value) {
+      this.companionMicSuppressed = Boolean(value)
     },
     speak(text) {
       if (!this.autoSpeak) {
@@ -706,6 +729,11 @@ export const useAssistantStore = defineStore('assistant', {
     teardown() {
       this.clearIdleTimer()
       this.pauseAutoGalleryTour()
+      if (typeof window !== 'undefined' && this.companionToastTimer) {
+        window.clearTimeout(this.companionToastTimer)
+        this.companionToastTimer = 0
+      }
+      this.companionToast = ''
     },
   },
 })

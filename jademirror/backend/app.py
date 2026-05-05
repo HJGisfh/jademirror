@@ -2,11 +2,10 @@
 JadeMirror Web 后端入口：服务 Vue/Vite 前端，读 jademirror/backend/.env。
 与手机 App 后端（jademirror/mobile_backend，经 app_mobile.py）数据与配置隔离。
 """
-import os
-
 from jademirror_core import create_app
 
 app = create_app('web')
+
 
 if __name__ == '__main__':
     from jademirror_core.application import _server_listen_port
