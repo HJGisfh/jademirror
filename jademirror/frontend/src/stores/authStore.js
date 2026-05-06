@@ -63,6 +63,13 @@ export const useAuthStore = defineStore('auth', {
       this.sessionChecked = true
       return data.user
     },
+    async guestLogin() {
+      const { data } = await http.post('/auth/guest')
+
+      this.applyAuth({ user: data.user, token: data.token })
+      this.sessionChecked = true
+      return data.user
+    },
     async login({ username, password }) {
       const { data } = await http.post('/auth/login', {
         username,

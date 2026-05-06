@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import QuestionCard from '@/components/QuestionCard.vue'
 import { fetchJadeLibrary } from '@/api/jadeLibrary'
@@ -107,6 +107,15 @@ function goToNext() {
   if (isLastQuestion.value) return
   goToQuestion(currentIndex.value + 1)
 }
+
+watch(
+  () => answers[currentQuestion.value?.id],
+  (newVal, oldVal) => {
+    if (newVal && !oldVal && !isLastQuestion.value) {
+      setTimeout(() => goToQuestion(currentIndex.value + 1), 400)
+    }
+  },
+)
 
 async function submitMatch() {
   if (!allCompleted.value) {

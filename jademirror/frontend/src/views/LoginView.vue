@@ -74,6 +74,22 @@ async function handleRegister() {
   }
 }
 
+async function handleGuestLogin() {
+  submitting.value = true
+  errorText.value = ''
+  successText.value = ''
+
+  try {
+    await authStore.guestLogin()
+    successText.value = '游客登录成功，正在进入玉镜。'
+    router.replace(redirectPath.value)
+  } catch (error) {
+    errorText.value = error.message || '游客登录失败，请重试。'
+  } finally {
+    submitting.value = false
+  }
+}
+
 onMounted(() => {
   if (authStore.isLoggedIn) {
     router.replace(redirectPath.value)
@@ -166,6 +182,18 @@ onMounted(() => {
         </button>
       </form>
 
+      <div class="guest-section">
+        <button
+          type="button"
+          class="guest-btn"
+          :disabled="submitting"
+          @click="handleGuestLogin"
+        >
+          {{ submitting ? '登录中...' : '游客登录' }}
+        </button>
+        <p class="guest-hint">无需注册，一键进入体验。</p>
+      </div>
+
       <p v-if="errorText" class="error-text">{{ errorText }}</p>
       <p v-if="successText" class="success-text">{{ successText }}</p>
     </article>
@@ -238,6 +266,41 @@ input {
 
 input:focus {
   border-color: rgba(52, 95, 80, 0.55);
+}
+
+.guest-section {
+  display: grid;
+  gap: 0.3rem;
+  padding-top: 0.2rem;
+  border-top: 1px solid rgba(58, 91, 79, 0.1);
+}
+
+.guest-btn {
+  border: 1px solid rgba(57, 94, 80, 0.22);
+  background: rgba(238, 245, 240, 0.85);
+  color: var(--ink-600);
+  border-radius: 999px;
+  padding: 0.5rem 0.72rem;
+  cursor: pointer;
+  font-size: 0.92rem;
+  transition: background 0.2s ease, transform 0.2s ease;
+}
+
+.guest-btn:hover:not(:disabled) {
+  background: rgba(92, 131, 110, 0.18);
+  transform: translateY(-1px);
+}
+
+.guest-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.guest-hint {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--ink-400);
+  text-align: center;
 }
 
 .error-text {

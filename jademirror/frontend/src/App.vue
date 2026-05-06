@@ -105,7 +105,7 @@ async function handleAuthAction() {
       </article>
     </div>
 
-    <CompanionPanel />
+    <CompanionPanel v-if="authStore.isLoggedIn" />
   </div>
 </template>
 

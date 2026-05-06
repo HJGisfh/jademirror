@@ -884,6 +884,33 @@ def auth_register():
     return jsonify({'token': token, 'expires_at': expires_at, 'user': sanitize_user(user_row)})
 
 
+@bp.post('/api/auth/guest')
+def auth_guest():
+    """Create a guest account with random credentials and return a token."""
+    now_ts = utc_now_ts()
+    suffix = secrets.token_hex(8)
+    username = f'guest_{suffix}'
+    nickname = f'游客_{suffix[:6]}'
+    password = secrets.token_urlsafe(16)
+
+    with db_connect() as conn:
+        password_hash = generate_password_hash(password)
+        cursor = conn.execute(
+            'INSERT INTO users(username, nickname, password_hash, created_at) VALUES(?, ?, ?, ?)',
+            (username, nickname, password_hash, now_ts),
+        )
+        user_id = cursor.lastrowid
+        token, expires_at = create_session(conn, user_id)
+
+        user_row = conn.execute(
+            'SELECT id, username, nickname FROM users WHERE id = ? LIMIT 1',
+            (user_id,),
+        ).fetchone()
+        conn.commit()
+
+    return jsonify({'token': token, 'expires_at': expires_at, 'user': sanitize_user(user_row)})
+
+
 @bp.post('/api/auth/login')
 def auth_login():
     data = request.get_json(silent=True) or {}

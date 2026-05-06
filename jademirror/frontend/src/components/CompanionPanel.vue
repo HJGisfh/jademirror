@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import CompanionSettings from '@/components/CompanionSettings.vue'
 import SpiritPet from '@/components/SpiritPet.vue'
@@ -13,6 +13,86 @@ const voiceStore = useVoiceStore()
 const draft = ref('')
 const showSettings = ref(false)
 let vadPollId = 0
+
+// ── expand / collapse ──
+const isExpanded = ref(false)
+
+// ── drag ──
+const isDragging = ref(false)
+const hasDragged = ref(false)
+const panelLeft = ref(NaN)
+const panelTop = ref(NaN)
+const dragStartMouseX = ref(0)
+const dragStartMouseY = ref(0)
+const dragStartLeft = ref(0)
+const dragStartTop = ref(0)
+const panelEl = ref(null)
+
+function clampToViewport() {
+  if (!panelEl.value) return
+  const rect = panelEl.value.getBoundingClientRect()
+  if (!isNaN(panelLeft.value)) {
+    panelLeft.value = Math.max(0, Math.min(window.innerWidth - rect.width, panelLeft.value))
+  }
+  if (!isNaN(panelTop.value)) {
+    panelTop.value = Math.max(0, Math.min(window.innerHeight - rect.height, panelTop.value))
+  }
+}
+
+function onDragPointerDown(e) {
+  if (e.target.closest('button, textarea, input, a, label')) return
+  e.preventDefault()
+  isDragging.value = true
+  hasDragged.value = false
+  dragStartMouseX.value = e.clientX
+  dragStartMouseY.value = e.clientY
+  if (!panelEl.value) return
+  const rect = panelEl.value.getBoundingClientRect()
+  if (isNaN(panelLeft.value)) panelLeft.value = rect.left
+  if (isNaN(panelTop.value)) panelTop.value = rect.top
+  dragStartLeft.value = panelLeft.value
+  dragStartTop.value = panelTop.value
+  window.addEventListener('pointermove', onDragPointerMove)
+  window.addEventListener('pointerup', onDragPointerUp)
+}
+
+function onDragPointerMove(e) {
+  if (!isDragging.value) return
+  const dx = e.clientX - dragStartMouseX.value
+  const dy = e.clientY - dragStartMouseY.value
+  if (Math.abs(dx) > 3 || Math.abs(dy) > 3) hasDragged.value = true
+  if (!panelEl.value) return
+  const rect = panelEl.value.getBoundingClientRect()
+  panelLeft.value = Math.max(0, Math.min(window.innerWidth - rect.width, dragStartLeft.value + dx))
+  panelTop.value = Math.max(0, Math.min(window.innerHeight - rect.height, dragStartTop.value + dy))
+}
+
+function onDragPointerUp() {
+  isDragging.value = false
+  window.removeEventListener('pointermove', onDragPointerMove)
+  window.removeEventListener('pointerup', onDragPointerUp)
+}
+
+function onPetInteraction() {
+  if (hasDragged.value) return
+  isExpanded.value = !isExpanded.value
+  if (isExpanded.value) {
+    nextTick(() => clampToViewport())
+  }
+}
+
+const positionStyle = computed(() => {
+  const style = {}
+  if (!isNaN(panelLeft.value)) {
+    style.left = panelLeft.value + 'px'
+    style.right = 'auto'
+  }
+  if (!isNaN(panelTop.value)) {
+    style.top = panelTop.value + 'px'
+    style.bottom = 'auto'
+  }
+  return style
+})
 
 assistantStore.welcomeIfNeeded()
 assistantStore.setStage(route.name)
@@ -52,48 +132,6 @@ async function sendDraft() {
   }
   draft.value = ''
   await assistantStore.handleUserText(text, router)
-}
-
-async function voiceInputOnce() {
-  if (assistantStore.busy || assistantStore.companionMicSuppressed) return
-  voiceStore.stopSpeaking()
-  if (voiceStore.autoListening) {
-    voiceStore.stopAutoListen()
-    stopVADPoll()
-  }
-  await assistantStore.listenAndHandle(router)
-  resumeAutoListenIfNeeded()
-}
-
-function beginHoldToTalk() {
-  if (assistantStore.busy || assistantStore.companionMicSuppressed || voiceStore.holdListening || !voiceStore.recognitionSupported) {
-    return
-  }
-  if (voiceStore.autoListening) {
-    voiceStore.stopAutoListen()
-    stopVADPoll()
-  }
-  voiceStore.startHoldListening()
-}
-
-async function endHoldToTalk() {
-  if (!voiceStore.holdListening) {
-    return
-  }
-  const transcript = await voiceStore.stopHoldListening()
-  const text = String(transcript || '').trim()
-  if (!text) {
-    resumeAutoListenIfNeeded()
-    return
-  }
-  await assistantStore.handleUserText(text, router)
-  resumeAutoListenIfNeeded()
-}
-
-function stopAllListening() {
-  voiceStore.stopAutoListen()
-  stopVADPoll()
-  voiceStore.stopListening()
 }
 
 function replayAssistantVoice() {
@@ -219,6 +257,11 @@ function closeSettings() {
   showSettings.value = false
 }
 
+function cleanDragListeners() {
+  window.removeEventListener('pointermove', onDragPointerMove)
+  window.removeEventListener('pointerup', onDragPointerUp)
+}
+
 onMounted(() => {
   window.addEventListener('pointerdown', handleGlobalActivity, true)
   window.addEventListener('keydown', handleGlobalActivity, true)
@@ -232,73 +275,91 @@ onBeforeUnmount(() => {
   stopVADPoll()
   voiceStore.stopListening()
   assistantStore.teardown()
+  cleanDragListeners()
 })
 </script>
 
 <template>
-  <aside class="companion">
+  <aside
+    ref="panelEl"
+    class="companion"
+    :class="{ collapsed: !isExpanded, dragging: isDragging }"
+    :style="positionStyle"
+  >
     <Transition name="toast-fade">
       <div v-if="assistantStore.companionToast" class="companion-toast">
         {{ assistantStore.companionToast }}
       </div>
     </Transition>
 
-    <div class="pet-dock">
-      <div class="pet-dock-main" @click="openSettings">
-        <SpiritPet :state="petState" :size="52" />
-        <span class="pet-status">{{ statusText }}</span>
+    <!-- collapsed: floating pet only -->
+    <div
+      v-if="!isExpanded"
+      class="collapsed-pet"
+      @pointerdown="onDragPointerDown"
+      @click="onPetInteraction"
+    >
+      <SpiritPet :state="petState" :size="44" />
+    </div>
+
+    <!-- expanded: full panel -->
+    <template v-if="isExpanded">
+      <div class="pet-dock" @pointerdown="onDragPointerDown" @click="onPetInteraction">
+        <div class="pet-dock-main">
+          <SpiritPet :state="petState" :size="52" />
+          <span class="pet-status">{{ statusText }}</span>
+        </div>
+        <button type="button" class="settings-btn" @click.stop="openSettings">设置</button>
       </div>
-      <button type="button" class="settings-btn" @click.stop="openSettings">设置</button>
-    </div>
 
-    <div class="voice-toolbar">
-      <button
-        type="button"
-        class="tool-btn"
-        :disabled="assistantStore.busy || !voiceStore.recognitionSupported || assistantStore.companionMicSuppressed"
-        @click="voiceInputOnce"
-      >
-        语音输入
-      </button>
-      <button
-        type="button"
-        class="tool-btn"
-        :class="{ active: voiceStore.holdListening }"
-        :disabled="assistantStore.busy || !voiceStore.recognitionSupported || voiceStore.autoListening || assistantStore.companionMicSuppressed"
-        @pointerdown.prevent="beginHoldToTalk"
-        @pointerup.prevent="endHoldToTalk"
-        @pointerleave.prevent="endHoldToTalk"
-        @pointercancel.prevent="endHoldToTalk"
-      >
-        {{ voiceStore.holdListening ? '松开结束' : '按住说话' }}
-      </button>
-      <button type="button" class="tool-btn" :disabled="!voiceStore.listening && !voiceStore.autoListening" @click="stopAllListening">
-        停止聆听
-      </button>
-      <button type="button" class="tool-btn" :disabled="!assistantStore.latestReply" @click="replayAssistantVoice">重播玉音</button>
-      <button type="button" class="tool-btn" :disabled="!voiceStore.speaking" @click="voiceStore.stopSpeaking()">停止播报</button>
-      <button
-        type="button"
-        class="tool-btn toggle"
-        :class="{ on: assistantStore.autoSpeak }"
-        @click="toggleAutoSpeakReplies"
-      >
-        自动播报回复
-      </button>
-    </div>
+      <div class="voice-toolbar">
+        <button
+          type="button"
+          class="tool-btn toggle"
+          :class="{ on: assistantStore.autoListen }"
+          @click="assistantStore.autoListen = !assistantStore.autoListen"
+        >
+          {{ assistantStore.autoListen ? '关闭监听' : '开启监听' }}
+        </button>
+        <button
+          type="button"
+          class="tool-btn"
+          :disabled="!assistantStore.latestReply"
+          @click="replayAssistantVoice"
+        >
+          重播玉音
+        </button>
+        <button
+          type="button"
+          class="tool-btn"
+          :disabled="!voiceStore.speaking"
+          @click="voiceStore.stopSpeaking()"
+        >
+          停止播报
+        </button>
+        <button
+          type="button"
+          class="tool-btn toggle"
+          :class="{ on: assistantStore.autoSpeak }"
+          @click="toggleAutoSpeakReplies"
+        >
+          自动播报回复
+        </button>
+      </div>
 
-    <div class="composer">
-      <textarea
-        v-model="draft"
-        rows="2"
-        placeholder="文字输入：带我去测试 / 去藏室 / 继续聊天..."
-        @keydown.enter.exact.prevent="sendDraft"
-      ></textarea>
-      <button type="button" class="jade-button primary send-btn" :disabled="assistantStore.busy" @click="sendDraft">发送</button>
-    </div>
+      <div class="composer">
+        <textarea
+          v-model="draft"
+          rows="2"
+          placeholder="文字输入：带我去测试 / 去藏室 / 继续聊天..."
+          @keydown.enter.exact.prevent="sendDraft"
+        ></textarea>
+        <button type="button" class="jade-button primary send-btn" :disabled="assistantStore.busy" @click="sendDraft">发送</button>
+      </div>
 
-    <p v-if="assistantStore.lastError" class="error-text">{{ assistantStore.lastError }}</p>
-    <p v-if="voiceStore.lastError" class="error-text">{{ voiceStore.lastError }}</p>
+      <p v-if="assistantStore.lastError" class="error-text">{{ assistantStore.lastError }}</p>
+      <p v-if="voiceStore.lastError" class="error-text">{{ voiceStore.lastError }}</p>
+    </template>
 
     <CompanionSettings v-if="showSettings" @close="closeSettings" />
   </aside>
@@ -310,11 +371,23 @@ onBeforeUnmount(() => {
   right: 1rem;
   bottom: 1rem;
   z-index: 40;
-  width: min(440px, calc(100vw - 1.5rem));
   display: flex;
   flex-direction: column;
   align-items: stretch;
   gap: 0.45rem;
+  user-select: none;
+}
+
+.companion.collapsed {
+  width: auto;
+}
+
+.companion:not(.collapsed) {
+  width: min(440px, calc(100vw - 1.5rem));
+}
+
+.companion.dragging {
+  transition: none;
 }
 
 .companion-toast {
@@ -328,6 +401,7 @@ onBeforeUnmount(() => {
   font-size: 0.84rem;
   line-height: 1.55;
   color: #285946;
+  user-select: text;
 }
 
 .toast-fade-enter-active,
@@ -340,6 +414,31 @@ onBeforeUnmount(() => {
   transform: translateY(6px);
 }
 
+/* ── collapsed pet ── */
+.collapsed-pet {
+  cursor: grab;
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 999px;
+  background: rgba(247, 252, 248, 0.95);
+  border: 1px solid rgba(56, 90, 77, 0.2);
+  box-shadow: 0 6px 18px rgba(34, 69, 56, 0.12);
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.collapsed-pet:hover {
+  box-shadow: 0 8px 24px rgba(34, 69, 56, 0.22);
+  transform: scale(1.06);
+}
+
+.collapsed-pet:active,
+.companion.dragging .collapsed-pet {
+  cursor: grabbing;
+}
+
+/* ── expanded dock ── */
 .pet-dock {
   display: flex;
   align-items: center;
@@ -350,13 +449,17 @@ onBeforeUnmount(() => {
   background: rgba(247, 252, 248, 0.95);
   border: 1px solid rgba(56, 90, 77, 0.2);
   box-shadow: 0 6px 18px rgba(34, 69, 56, 0.12);
+  cursor: grab;
+}
+
+.companion.dragging .pet-dock {
+  cursor: grabbing;
 }
 
 .pet-dock-main {
   display: flex;
   align-items: center;
   gap: 0.45rem;
-  cursor: pointer;
   flex: 1;
   min-width: 0;
 }
@@ -389,6 +492,7 @@ onBeforeUnmount(() => {
   background: rgba(220, 234, 225, 0.95);
 }
 
+/* ── voice toolbar ── */
 .voice-toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -427,6 +531,7 @@ onBeforeUnmount(() => {
   border-color: transparent;
 }
 
+/* ── composer ── */
 .composer {
   display: grid;
   gap: 0.4rem;
@@ -440,6 +545,7 @@ onBeforeUnmount(() => {
   background: rgba(255, 255, 255, 0.93);
   padding: 0.5rem 0.6rem;
   font-size: 0.84rem;
+  user-select: text;
 }
 
 .send-btn {
@@ -450,10 +556,11 @@ onBeforeUnmount(() => {
   margin: 0;
   color: var(--danger);
   font-size: 0.8rem;
+  user-select: text;
 }
 
 @media (max-width: 720px) {
-  .companion {
+  .companion:not(.collapsed) {
     right: 0.6rem;
     bottom: 0.6rem;
   }
