@@ -1210,11 +1210,42 @@ def auth_logout():
     if not token:
         return json_error('未提供登录令牌。', 401)
 
+    auth_result, err = require_auth()
+    if err:
+        return err
+
+    user = auth_result.get('user') or {}
+    user_id = int(user.get('id') or 0)
+    username = str(user.get('username') or '')
+    is_guest = user_id > 0 and username.startswith('guest_')
+
     with db_connect() as conn:
         conn.execute('DELETE FROM sessions WHERE token = ?', (token,))
+
+        if is_guest:
+            rows = conn.execute(
+                'SELECT image_filename FROM works WHERE user_id = ?',
+                (user_id,),
+            ).fetchall()
+            for row in rows:
+                filename = row['image_filename']
+                if not filename:
+                    continue
+                try:
+                    (WORKS_IMAGES_DIR / filename).unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+            conn.execute('DELETE FROM works WHERE user_id = ?', (user_id,))
+            conn.execute('DELETE FROM assistant_memory WHERE user_id = ?', (user_id,))
+            conn.execute('DELETE FROM assistant_events WHERE user_id = ?', (user_id,))
+            conn.execute('DELETE FROM assistant_memory_digest WHERE user_id = ?', (user_id,))
+            conn.execute('DELETE FROM sessions WHERE user_id = ?', (user_id,))
+            conn.execute('DELETE FROM users WHERE id = ?', (user_id,))
+
         conn.commit()
 
-    return jsonify({'ok': True})
+    return jsonify({'ok': True, 'guest_deleted': is_guest})
 
 
 @bp.post('/api/auth/update-password')

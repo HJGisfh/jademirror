@@ -13,7 +13,7 @@ import '../utils/app_theme.dart';
 import 'companion_settings_sheet.dart';
 import 'jade_spirit_pet.dart';
 
-/// 玉灵悬浮球：默认 **自动监听**；**单击** 展开/收起字幕；**长按** 打开设置（声线、监听等）。
+/// 玉灵悬浮球：**按住说话**，松开发送；**单击** 展开/收起字幕；设置在字幕面板内。
 ///
 /// Android 上 `error_busy` 多因 **listen 重叠** 或 **stop 未完成又 listen**。
 /// 此处用 **串行队列** + **防抖** + **stop 后短延迟** 再 `listen`。
@@ -55,11 +55,14 @@ class _VoiceCommandBarState extends State<VoiceCommandBar> {
   String _engineHint = '';
   bool _wasSuppressed = false;
   bool _captionsExpanded = false;
+  String _pendingTranscript = '';
+  bool _sessionFinalized = false;
+  bool _holding = false;
 
   /// 所有 `stop` / `listen` 串行执行，避免 `error_busy`。
   Future<void> _sttChain = Future.value();
 
-  Timer? _debounceListen;
+  bool _restartingEngine = false;
 
   void _setCaptionsExpanded(bool value) {
     if (_captionsExpanded == value) return;
@@ -93,26 +96,10 @@ class _VoiceCommandBarState extends State<VoiceCommandBar> {
     return done.future;
   }
 
-  bool _canAutoListen() {
-    return widget.companion.autoListenStt &&
-        _available &&
+  bool _canHoldListen() {
+    return _available &&
         !widget.voiceShell.suppressFloatingVoice &&
         !widget.companion.busy;
-  }
-
-  void _debouncedStartListen({Duration delay = const Duration(milliseconds: 720)}) {
-    if (!_canAutoListen()) return;
-    _debounceListen?.cancel();
-    _debounceListen = Timer(delay, () {
-      _debounceListen = null;
-      if (!mounted || !_canAutoListen()) return;
-      _runSttSerial(_openListenSession);
-    });
-  }
-
-  void _cancelDebouncedListen() {
-    _debounceListen?.cancel();
-    _debounceListen = null;
   }
 
   @override
@@ -126,7 +113,6 @@ class _VoiceCommandBarState extends State<VoiceCommandBar> {
 
   @override
   void dispose() {
-    _cancelDebouncedListen();
     if (_captionsExpanded) {
       widget.onCaptionsExpandedChanged?.call(false);
     }
@@ -136,35 +122,16 @@ class _VoiceCommandBarState extends State<VoiceCommandBar> {
     super.dispose();
   }
 
-  @override
-  void didUpdateWidget(covariant VoiceCommandBar oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.companion.autoListenStt != widget.companion.autoListenStt ||
-        oldWidget.companion.silenceThresholdMs != widget.companion.silenceThresholdMs) {
-      _cancelDebouncedListen();
-      _runSttSerial(() async {
-        try {
-          await _speech.stop();
-        } catch (_) {}
-        if (mounted) setState(() => _listening = false);
-        await Future.delayed(const Duration(milliseconds: 200));
-        if (mounted) _debouncedStartListen();
-      });
-    }
-  }
-
   void _onCompanionChanged() {
     if (!mounted) return;
     if (widget.companion.busy) {
-      _cancelDebouncedListen();
+      _holding = false;
       _runSttSerial(() async {
         try {
           await _speech.stop();
         } catch (_) {}
         if (mounted) setState(() => _listening = false);
       });
-    } else {
-      _debouncedStartListen();
     }
     setState(() {});
   }
@@ -175,7 +142,7 @@ class _VoiceCommandBarState extends State<VoiceCommandBar> {
     widget.onVoiceShellSuppressChanged?.call(sup);
     if (sup) {
       _wasSuppressed = true;
-      _cancelDebouncedListen();
+      _holding = false;
       _runSttSerial(() async {
         try {
           await _speech.stop();
@@ -184,7 +151,6 @@ class _VoiceCommandBarState extends State<VoiceCommandBar> {
       });
     } else if (_wasSuppressed) {
       _wasSuppressed = false;
-      _debouncedStartListen();
     }
     setState(() {});
   }
@@ -215,9 +181,6 @@ class _VoiceCommandBarState extends State<VoiceCommandBar> {
           _engineHint = '';
         }
       });
-      if (available) {
-        _debouncedStartListen(delay: const Duration(milliseconds: 400));
-      }
     } catch (_) {
       if (!mounted) return;
       setState(() {
@@ -230,21 +193,29 @@ class _VoiceCommandBarState extends State<VoiceCommandBar> {
   void _onStatus(String status) {
     final isListening = status == 'listening';
     if (!mounted) return;
+    final wasListening = _listening;
     setState(() => _listening = isListening);
+    if (wasListening && !isListening && !_sessionFinalized && !_holding) {
+      final pending = _pendingTranscript.trim();
+      if (pending.isNotEmpty) {
+        _sessionFinalized = true;
+        _runSttSerial(() => _finalizeUtterance(pending));
+      }
+    }
   }
 
   void _onError(SpeechRecognitionError error) {
     if (!mounted) return;
     final code = error.errorMsg;
     final isBusy = code == 'error_busy';
+    final isClient = code == 'error_client';
     setState(() {
       _error = isBusy ? '' : _mapError(code);
       _listening = false;
     });
-    if (isBusy) {
-      _debouncedStartListen(delay: const Duration(milliseconds: 1200));
-    } else {
-      _debouncedStartListen(delay: const Duration(milliseconds: 900));
+    _holding = false;
+    if (isClient) {
+      _runSttSerial(_restartSpeechEngine);
     }
   }
 
@@ -258,20 +229,49 @@ class _VoiceCommandBarState extends State<VoiceCommandBar> {
         return '语音识别网络异常。';
       case 'error_busy':
         return '识别引擎忙，正在自动重试…';
+      case 'error_client':
+        return '识别引擎异常，正在恢复…';
       default:
         return '语音识别失败，请重试。';
     }
   }
 
+  Future<void> _restartSpeechEngine() async {
+    if (_restartingEngine) return;
+    _restartingEngine = true;
+    try {
+      try {
+        await _speech.cancel();
+      } catch (_) {}
+      try {
+        await _speech.stop();
+      } catch (_) {}
+      await Future.delayed(const Duration(milliseconds: 420));
+      if (!mounted) return;
+      await _initSpeech();
+    } finally {
+      _restartingEngine = false;
+    }
+  }
+
   Future<void> _openListenSession() async {
-    if (!_canAutoListen()) return;
+    if (!_canHoldListen() || !_holding) {
+      _holding = false;
+      return;
+    }
 
     try {
+      try {
+        await _speech.cancel();
+      } catch (_) {}
       await _speech.stop();
     } catch (_) {}
 
     await Future.delayed(Duration(milliseconds: Platform.isAndroid ? 320 : 200));
-    if (!mounted || !_canAutoListen()) return;
+    if (!mounted || !_canHoldListen() || !_holding) {
+      _holding = false;
+      return;
+    }
 
     if (Platform.isAndroid || Platform.isIOS) {
       final mic = await DeviceSpeechInit.ensureMicrophoneGranted();
@@ -281,23 +281,27 @@ class _VoiceCommandBarState extends State<VoiceCommandBar> {
             _error = '麦克风权限未开启。';
           });
         }
+        _holding = false;
         return;
       }
     }
 
-    if (!mounted || !_canAutoListen()) return;
+    if (!mounted || !_canHoldListen() || !_holding) {
+      _holding = false;
+      return;
+    }
     setState(() {
       _error = '';
       _transcript = '';
     });
-
-    final pauseMs = widget.companion.silenceThresholdMs.clamp(800, 3000);
+    _pendingTranscript = '';
+    _sessionFinalized = false;
 
     try {
       await _speech.listen(
         localeId: 'zh_CN',
         listenFor: const Duration(minutes: 2),
-        pauseFor: Duration(milliseconds: pauseMs),
+        pauseFor: const Duration(seconds: 5),
         listenOptions: stt.SpeechListenOptions(
           listenMode: stt.ListenMode.dictation,
           partialResults: true,
@@ -306,8 +310,10 @@ class _VoiceCommandBarState extends State<VoiceCommandBar> {
         onResult: (result) {
           final words = result.recognizedWords.trim();
           if (!mounted || words.isEmpty) return;
+          _pendingTranscript = words;
           setState(() => _transcript = words);
-          if (result.finalResult) {
+          if (result.finalResult && !_sessionFinalized) {
+            _sessionFinalized = true;
             _runSttSerial(() => _finalizeUtterance(words));
           }
         },
@@ -316,8 +322,36 @@ class _VoiceCommandBarState extends State<VoiceCommandBar> {
       if (mounted) {
         setState(() => _listening = false);
       }
-      _debouncedStartListen(delay: const Duration(milliseconds: 1000));
+      _holding = false;
     }
+  }
+
+  void _startHoldListen() {
+    if (!_canHoldListen() || _holding) return;
+    _holding = true;
+    _pendingTranscript = '';
+    _sessionFinalized = false;
+    setState(() {
+      _error = '';
+      _transcript = '';
+    });
+    _runSttSerial(_openListenSession);
+  }
+
+  void _stopHoldListen() {
+    if (!_holding) return;
+    _holding = false;
+    _runSttSerial(() async {
+      try {
+        await _speech.stop();
+      } catch (_) {}
+      await Future.delayed(const Duration(milliseconds: 180));
+      if (!mounted || _sessionFinalized) return;
+      final words = _pendingTranscript.trim();
+      if (words.isEmpty) return;
+      _sessionFinalized = true;
+      await _finalizeUtterance(words);
+    });
   }
 
   Future<void> _finalizeUtterance(String words) async {
@@ -326,12 +360,44 @@ class _VoiceCommandBarState extends State<VoiceCommandBar> {
     } catch (_) {}
     await Future.delayed(const Duration(milliseconds: 240));
     if (!mounted) return;
-    await widget.onUserSpeech(words);
+    
+    // 🔥 语音识别纠错：修复常见误识别（与jademirror voiceStore对齐）
+    final corrected = _correctTranscript(words);
+    await widget.onUserSpeech(corrected);
+  }
+
+  /// 修正语音识别中的常见错误（与jademirror voiceStore.correctTranscript对齐）
+  String _correctTranscript(String text) {
+    String result = text;
+    
+    // 优先匹配完整短语（避免误伤）
+    final phraseCorrections = {
+      '与域对话': '与玉对话',
+      '玉域对话': '与玉对话',
+      '遇域对话': '与玉对话',
+      '与鱼对话': '与玉对话',
+      '生成域': '生成玉',
+      '生成鱼': '生成玉',
+      '匹配域': '匹配玉',
+      '匹配鱼': '匹配玉',
+      '古域': '古玉',
+      '古鱼': '古玉',
+      '域灵童子': '玉灵童子',
+      '鱼灵童子': '玉灵童子',
+      '域器': '玉器',
+      '鱼器': '玉器',
+    };
+    
+    for (final entry in phraseCorrections.entries) {
+      result = result.replaceAll(entry.key, entry.value);
+    }
+    
+    return result;
   }
 
   Future<void> _openSettings() async {
     _setCaptionsExpanded(false);
-    _cancelDebouncedListen();
+    _holding = false;
     await _runSttSerialAndWait(() async {
       try {
         await _speech.stop();
@@ -341,15 +407,13 @@ class _VoiceCommandBarState extends State<VoiceCommandBar> {
     if (!mounted) return;
     setState(() => _listening = false);
     await showCompanionSettingsSheet(context);
-    if (!mounted) return;
-    _debouncedStartListen();
   }
 
   @override
   Widget build(BuildContext context) {
     final suppressed = widget.voiceShell.suppressFloatingVoice;
     final busy = widget.companion.busy;
-    final listenOn = widget.companion.autoListenStt && _available && !suppressed && !busy;
+    final listenOn = _available && !suppressed && !busy;
 
     final pet = JadeSpiritPet(
       state: suppressed
@@ -368,7 +432,9 @@ class _VoiceCommandBarState extends State<VoiceCommandBar> {
       child: GestureDetector(
         onPanUpdate: widget.onPetPanUpdate,
         onTap: _toggleCaptions,
-        onLongPress: () => unawaited(_openSettings()),
+        onLongPressStart: (_) => _startHoldListen(),
+        onLongPressEnd: (_) => _stopHoldListen(),
+        onLongPressCancel: _stopHoldListen,
         child: SizedBox(
           width: 58,
           height: 58,
@@ -398,16 +464,16 @@ class _VoiceCommandBarState extends State<VoiceCommandBar> {
     );
 
     final tip = suppressed
-        ? '对话中，玉灵已暂停监听'
-        : !_available && _engineHint.isNotEmpty
-            ? _engineHint
-            : busy
-                ? '玉灵正在回复…'
-                : (_error.isNotEmpty
-                    ? _error
-                    : (listenOn
-                        ? (_transcript.isNotEmpty ? _transcript : widget.hintText)
-                        : '自动监听已关闭，可在设置中重新打开'));
+      ? '对话中，玉灵已暂停语音'
+      : !_available && _engineHint.isNotEmpty
+        ? _engineHint
+        : busy
+          ? '玉灵正在回复…'
+          : (_error.isNotEmpty
+            ? _error
+            : (_holding || _listening)
+              ? (_transcript.isNotEmpty ? _transcript : '正在聆听…')
+              : widget.hintText);
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -415,7 +481,7 @@ class _VoiceCommandBarState extends State<VoiceCommandBar> {
       children: [
         if (_captionsExpanded) _buildCaptionsCard(suppressed, busy, listenOn),
         if (!_captionsExpanded &&
-            (_transcript.isNotEmpty || _error.isNotEmpty || !listenOn || suppressed || busy))
+            (_transcript.isNotEmpty || _error.isNotEmpty || listenOn || suppressed || busy))
           ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 220),
             child: Padding(
@@ -434,7 +500,7 @@ class _VoiceCommandBarState extends State<VoiceCommandBar> {
             ),
           ),
         Tooltip(
-          message: '单击展开/收起字幕；长按打开设置；拖动可移动位置',
+          message: '单击展开/收起字幕；按住说话、松开发送；拖动可移动位置',
           child: Opacity(
             opacity: suppressed ? 0.55 : 1,
             child: bubble,
@@ -487,6 +553,13 @@ class _VoiceCommandBarState extends State<VoiceCommandBar> {
                 ),
               ),
               const Spacer(),
+              IconButton(
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                icon: Icon(Icons.settings, size: 18, color: AppColors.ink500),
+                tooltip: '设置',
+                onPressed: () => unawaited(_openSettings()),
+              ),
               IconButton(
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
@@ -578,7 +651,7 @@ class _VoiceCommandBarState extends State<VoiceCommandBar> {
                     ? '对话中，已暂停监听。'
                     : busy
                         ? '玉灵正在回复…'
-                        : '自动监听已关闭，可在「长按 → 设置」里打开。',
+                        : '按住小动物说话，松开发送。',
                 style: TextStyle(fontSize: 11, color: AppColors.ink500),
               ),
             ),

@@ -44,7 +44,28 @@ class JadeAppShellState extends State<JadeAppShell> with TickerProviderStateMixi
   @override
   void initState() {
     super.initState();
+    final authProvider = context.read<AuthProvider>();
+    _currentScreen = authProvider.isLoggedIn ? AppScreen.test : AppScreen.login;
+    authProvider.addListener(_onAuthChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(_wireCompanion()));
+  }
+
+  @override
+  void dispose() {
+    context.read<AuthProvider>().removeListener(_onAuthChanged);
+    super.dispose();
+  }
+
+  void _onAuthChanged() {
+    if (!mounted) return;
+    final authProvider = context.read<AuthProvider>();
+    if (!authProvider.isLoggedIn && _currentScreen != AppScreen.login) {
+      setState(() {
+        _isAnimating = false;
+        _currentScreen = AppScreen.login;
+      });
+      context.read<CompanionProvider>().syncStageFromAppScreen(AppScreen.login);
+    }
   }
 
   Future<void> _wireCompanion() async {
@@ -137,6 +158,18 @@ class JadeAppShellState extends State<JadeAppShell> with TickerProviderStateMixi
   }
 
   void navigateTo(AppScreen screen) {
+    final authProvider = context.read<AuthProvider>();
+    if (!authProvider.isLoggedIn && screen != AppScreen.login) {
+      _showLoginToast();
+      if (_currentScreen != AppScreen.login) {
+        setState(() {
+          _isAnimating = false;
+          _currentScreen = AppScreen.login;
+        });
+        context.read<CompanionProvider>().syncStageFromAppScreen(AppScreen.login);
+      }
+      return;
+    }
     if (_isAnimating || screen == _currentScreen) return;
 
     final userProvider = context.read<UserProvider>();
@@ -162,6 +195,11 @@ class JadeAppShellState extends State<JadeAppShell> with TickerProviderStateMixi
 
   void goBack() {
     if (_isAnimating) return;
+    final authProvider = context.read<AuthProvider>();
+    if (!authProvider.isLoggedIn) {
+      navigateTo(AppScreen.login);
+      return;
+    }
     switch (_currentScreen) {
       case AppScreen.result:
       case AppScreen.generate:
@@ -176,6 +214,12 @@ class JadeAppShellState extends State<JadeAppShell> with TickerProviderStateMixi
   }
 
   Future<void> _handleVoiceCommand(String input) async {
+    final authProvider = context.read<AuthProvider>();
+    if (!authProvider.isLoggedIn) {
+      _showLoginToast();
+      navigateTo(AppScreen.login);
+      return;
+    }
     final command = parseVoiceCommand(input);
     final userProvider = context.read<UserProvider>();
     final chatProvider = context.read<ChatProvider>();
@@ -278,6 +322,19 @@ class JadeAppShellState extends State<JadeAppShell> with TickerProviderStateMixi
     );
   }
 
+  void _showLoginToast() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Text('请先登录后再开始测试'),
+        duration: const Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.symmetric(horizontal: 32, vertical: 12),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.pill)),
+      ),
+    );
+  }
+
   bool get _showBottomNav {
     switch (_currentScreen) {
       case AppScreen.test:
@@ -326,7 +383,7 @@ class JadeAppShellState extends State<JadeAppShell> with TickerProviderStateMixi
                         companion: companion,
                         voiceShell: voiceShell,
                         title: '玉灵童子',
-                        hintText: '自动监听时，说完话静音片刻即发送；点小动物打开设置。',
+                        hintText: '按住说话，松开发送；设置在字幕面板里。',
                         petState: hasJade ? PetState.idle : PetState.thinking,
                         onVoiceShellSuppressChanged: (suppressed) {
                           context.read<CompanionProvider>().setListeningSuppressed(suppressed);

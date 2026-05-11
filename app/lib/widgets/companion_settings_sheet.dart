@@ -6,7 +6,7 @@ import 'package:provider/provider.dart';
 import '../providers/companion_provider.dart';
 import '../utils/app_theme.dart';
 
-/// 与 Web `CompanionSettings.vue` 对齐：声线、自动监听、播报、跳转、空闲闲聊等。
+/// 与 Web `CompanionSettings.vue` 对齐：声线、播报、跳转、空闲闲聊等。
 Future<void> showCompanionSettingsSheet(
   BuildContext context,
 ) {
@@ -67,15 +67,13 @@ Future<void> showCompanionSettingsSheet(
                       ),
                       const SizedBox(height: 8),
                       _sectionTitle('语音交互'),
-                      SwitchListTile(
+                      ListTile(
                         contentPadding: EdgeInsets.zero,
-                        title: const Text('自动监听'),
+                        title: const Text('按住说话'),
                         subtitle: const Text(
-                          '开启后玉灵会一直听你说，静音一段时间后会自动把这句话发给服务端。',
+                          '按住小动物说话，松开发送。语音识别失败可点“重试语音”。',
                           style: TextStyle(fontSize: 12, height: 1.35),
                         ),
-                        value: companion.autoListenStt,
-                        onChanged: (v) => unawaited(companion.setAutoListenStt(v)),
                       ),
                       SwitchListTile(
                         contentPadding: EdgeInsets.zero,
@@ -142,34 +140,6 @@ Future<void> showCompanionSettingsSheet(
                         onChanged: (v) => unawaited(companion.setIdleEnabled(v)),
                       ),
                       const SizedBox(height: 12),
-                      _sectionTitle('监听参数'),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              '静音判定时长 ${(companion.silenceThresholdMs / 1000).toStringAsFixed(1)} 秒',
-                              style: TextStyle(
-                                fontSize: 13,
-                                color: AppColors.ink700,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                      Slider(
-                        value: companion.silenceThresholdMs.clamp(800, 3000).toDouble(),
-                        min: 800,
-                        max: 3000,
-                        divisions: 22,
-                        label: '${(companion.silenceThresholdMs / 1000).toStringAsFixed(1)} 秒',
-                        onChanged: (v) {
-                          unawaited(companion.setSilenceThresholdMs(v.round()));
-                        },
-                      ),
-                      Text(
-                        '超过此时长没有声音，即判定说完一句。建议 1.2～2.0 秒。',
-                        style: TextStyle(fontSize: 11.5, color: AppColors.ink500),
-                      ),
                     ],
                   ),
                 ),

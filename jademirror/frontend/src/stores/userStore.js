@@ -3,7 +3,8 @@ import { createZeroVector } from '@/data/questions'
 import http from '@/api/http'
 
 const USER_STATE_STORAGE_KEY = 'jademirror-user-state-v1'
-const WORK_STORAGE_KEY = 'jademirror-works-v1'
+const AUTH_USER_KEY = 'jademirror-auth-user-v1'
+const WORK_STORAGE_PREFIX = 'jademirror-works-v2'
 
 function createDefaultUserState() {
   return {
@@ -42,9 +43,25 @@ function readUserState() {
   }
 }
 
-function readWorks() {
+function readAuthUserId() {
   try {
-    const raw = localStorage.getItem(WORK_STORAGE_KEY)
+    const raw = localStorage.getItem(AUTH_USER_KEY)
+    if (!raw) return ''
+    const parsed = JSON.parse(raw)
+    return parsed && parsed.id ? String(parsed.id) : ''
+  } catch {
+    return ''
+  }
+}
+
+function worksStorageKey(userId = '') {
+  const key = userId || readAuthUserId() || 'guest'
+  return `${WORK_STORAGE_PREFIX}:${key}`
+}
+
+function readWorks(userId = '') {
+  try {
+    const raw = localStorage.getItem(worksStorageKey(userId))
     return raw ? JSON.parse(raw) : []
   } catch {
     return []
@@ -143,8 +160,15 @@ export const useUserStore = defineStore('user', {
       this.lastPrompt = ''
       this.persistUserState()
     },
-    persistWorks() {
-      localStorage.setItem(WORK_STORAGE_KEY, JSON.stringify(this.works))
+    persistWorks(userId = '') {
+      localStorage.setItem(worksStorageKey(userId), JSON.stringify(this.works))
+    },
+    clearWorksCache(userId = '') {
+      try {
+        localStorage.removeItem(worksStorageKey(userId))
+      } catch {
+        // ignore storage failures
+      }
     },
     async fetchWorks() {
       try {
@@ -155,6 +179,7 @@ export const useUserStore = defineStore('user', {
               imageDataURL: w.imageUrl || w.imageDataURL || '',
             }))
           : []
+        this.persistWorks()
       } catch {
         this.works = readWorks()
       }

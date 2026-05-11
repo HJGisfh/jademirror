@@ -345,8 +345,9 @@ class CompanionProvider extends ChangeNotifier {
   Future<void> welcomeIfNeeded() async {
     if (_welcomed) return;
     _welcomed = true;
+    // 🔥 与jademirror对齐：每次登录都播报欢迎语
     const text =
-        '我是玉灵童子。我会一直听你说话（可在设置里关闭自动监听）；点小动物打开设置，可调声线、播报与空闲闲聊等。';
+      '我是玉灵童子，你的AI管家。按住我说话，松开发送；字幕面板里可调声线、播报与空闲闲聊等。';
     _appendMessage('assistant', text);
     await _speak(text);
     touchActivity();
@@ -389,22 +390,37 @@ class CompanionProvider extends ChangeNotifier {
       final reply = (map['reply'] as String?)?.trim().isNotEmpty == true
           ? map['reply'] as String
           : '我在，继续和我说说。';
-      final nextAction = (map['next_action'] as String?)?.trim() ?? 'free_chat';
-      final suggestedRoute = (map['suggested_route'] as String?)?.trim() ?? '';
-      final actionPayload = map['action_payload'] is Map
-          ? (map['action_payload'] as Map).cast<String, dynamic>()
-          : <String, dynamic>{};
 
       _applyEmotionTone(map['emotion'] as String?);
       _appendMessage('assistant', reply);
       await _speak(reply);
 
-      if (_autoGuide) {
-        onNavigate?.call(CompanionNavigateEvent(
-          nextAction: nextAction,
-          suggestedRoute: suggestedRoute,
-          actionPayload: actionPayload,
-        ));
+      // 🔥 NEW: Support tool_calls format (jademirror compatible)
+      if (map['tool_calls'] is List && (map['tool_calls'] as List).isNotEmpty) {
+        final toolCalls = (map['tool_calls'] as List).cast<Map<String, dynamic>>();
+        for (final call in toolCalls) {
+          final toolName = (call['name'] as String?)?.trim() ?? '';
+          final toolArgs = call['args'] is Map
+              ? (call['args'] as Map).cast<String, dynamic>()
+              : <String, dynamic>{};
+          await _executeTool(toolName, toolArgs);
+        }
+      } 
+      // 🔄 BACKWARD COMPATIBILITY: Support old next_action format
+      else if (map['next_action'] != null) {
+        final nextAction = (map['next_action'] as String?)?.trim() ?? 'free_chat';
+        final suggestedRoute = (map['suggested_route'] as String?)?.trim() ?? '';
+        final actionPayload = map['action_payload'] is Map
+            ? (map['action_payload'] as Map).cast<String, dynamic>()
+            : <String, dynamic>{};
+
+        if (_autoGuide) {
+          onNavigate?.call(CompanionNavigateEvent(
+            nextAction: nextAction,
+            suggestedRoute: suggestedRoute,
+            actionPayload: actionPayload,
+          ));
+        }
       }
     } catch (e) {
       final msg = _formatError(e);
@@ -421,6 +437,93 @@ class CompanionProvider extends ChangeNotifier {
       _busy = false;
       notifyListeners();
       touchActivity();
+    }
+  }
+
+  /// Execute a single tool call from AI agent
+  Future<void> _executeTool(String name, Map<String, dynamic> args) async {
+    switch (name) {
+      case 'navigate':
+        final route = args['route'] as String?;
+        if (route != null && _autoGuide) {
+          onNavigate?.call(CompanionNavigateEvent(
+            nextAction: 'navigate',
+            suggestedRoute: route,
+            actionPayload: args,
+          ));
+        }
+        break;
+      case 'start_guided_test':
+      case 'start_test':
+        if (_autoGuide) {
+          onNavigate?.call(CompanionNavigateEvent(
+            nextAction: 'start_guided_test',
+            suggestedRoute: '/test',
+            actionPayload: args,
+          ));
+        }
+        break;
+      case 'finish_test':
+        if (_autoGuide) {
+          onNavigate?.call(CompanionNavigateEvent(
+            nextAction: 'finish_test',
+            suggestedRoute: '/result',
+            actionPayload: args,
+          ));
+        }
+        break;
+      case 'generate_jade':
+        if (_autoGuide) {
+          onNavigate?.call(CompanionNavigateEvent(
+            nextAction: 'generate_jade',
+            suggestedRoute: '/generate',
+            actionPayload: args,
+          ));
+        }
+        break;
+      case 'save_to_gallery':
+        if (_autoGuide) {
+          onNavigate?.call(CompanionNavigateEvent(
+            nextAction: 'save_to_gallery',
+            suggestedRoute: '',
+            actionPayload: args,
+          ));
+        }
+        break;
+      case 'start_gallery_tour':
+        if (_autoGuide) {
+          onNavigate?.call(CompanionNavigateEvent(
+            nextAction: 'start_gallery_tour',
+            suggestedRoute: '/gallery',
+            actionPayload: args,
+          ));
+        }
+        break;
+      case 'delete_gallery_work':
+      case 'open_gallery_work':
+        if (_autoGuide) {
+          onNavigate?.call(CompanionNavigateEvent(
+            nextAction: name,
+            suggestedRoute: '',
+            actionPayload: args,
+          ));
+        }
+        break;
+      case 'record_answer':
+        // Answer recording is handled by the test page itself
+        if (_autoGuide) {
+          onNavigate?.call(CompanionNavigateEvent(
+            nextAction: 'record_answer',
+            suggestedRoute: '',
+            actionPayload: args,
+          ));
+        }
+        break;
+      case 'ask_clarification':
+      case 'none':
+      default:
+        // No action needed - pure chat or clarification
+        break;
     }
   }
 
@@ -453,23 +556,38 @@ class CompanionProvider extends ChangeNotifier {
       final reply = (map['reply'] as String?)?.trim().isNotEmpty == true
           ? map['reply'] as String
           : '我在这里，想继续哪一步，我都陪你。';
-      final nextAction = (map['next_action'] as String?)?.trim() ?? 'free_chat';
-      final suggestedRoute = (map['suggested_route'] as String?)?.trim() ?? '';
-      final actionPayload = map['action_payload'] is Map
-          ? (map['action_payload'] as Map).cast<String, dynamic>()
-          : <String, dynamic>{};
 
       _applyEmotionTone(map['emotion'] as String?);
       _appendMessage('assistant', reply);
       _idleNudgeCount += 1;
       await _speak(reply);
 
-      if (_autoGuide) {
-        onNavigate?.call(CompanionNavigateEvent(
-          nextAction: nextAction,
-          suggestedRoute: suggestedRoute,
-          actionPayload: actionPayload,
-        ));
+      // 🔥 NEW: Support tool_calls format
+      if (map['tool_calls'] is List && (map['tool_calls'] as List).isNotEmpty) {
+        final toolCalls = (map['tool_calls'] as List).cast<Map<String, dynamic>>();
+        for (final call in toolCalls) {
+          final toolName = (call['name'] as String?)?.trim() ?? '';
+          final toolArgs = call['args'] is Map
+              ? (call['args'] as Map).cast<String, dynamic>()
+              : <String, dynamic>{};
+          await _executeTool(toolName, toolArgs);
+        }
+      }
+      // 🔄 BACKWARD COMPATIBILITY: Support old next_action format
+      else if (map['next_action'] != null) {
+        final nextAction = (map['next_action'] as String?)?.trim() ?? 'free_chat';
+        final suggestedRoute = (map['suggested_route'] as String?)?.trim() ?? '';
+        final actionPayload = map['action_payload'] is Map
+            ? (map['action_payload'] as Map).cast<String, dynamic>()
+            : <String, dynamic>{};
+
+        if (_autoGuide) {
+          onNavigate?.call(CompanionNavigateEvent(
+            nextAction: nextAction,
+            suggestedRoute: suggestedRoute,
+            actionPayload: actionPayload,
+          ));
+        }
       }
     } catch (e) {
       _lastError = _formatError(e);

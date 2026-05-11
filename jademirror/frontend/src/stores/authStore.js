@@ -157,6 +157,7 @@ export const useAuthStore = defineStore('auth', {
       }
     },
     async logout() {
+      const userId = this.currentUser?.id ? String(this.currentUser.id) : ''
       try {
         if (this.token) {
           await http.post('/auth/logout')
@@ -174,7 +175,7 @@ export const useAuthStore = defineStore('auth', {
       const userStore = useUserStore()
       userStore.resetTest()  // 清空测试答案、匹配结果、生成的图片等
       userStore.works = []  // 清空展厅作品
-      userStore.persistWorks()  // 持久化空数组
+      userStore.clearWorksCache(userId)
       
       // 清空助手数据
       const { useAssistantStore } = await import('./assistantStore')

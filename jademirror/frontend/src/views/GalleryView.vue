@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useAudioStore } from '@/stores/audioStore'
 import { useAssistantStore } from '@/stores/assistantStore'
 import { useUserStore } from '@/stores/userStore'
@@ -43,6 +43,10 @@ const tourActive = computed(() => assistantStore.galleryTourIndex >= 0)
 const autoTour = computed(() => assistantStore.galleryTourAuto)
 const selectedWork = ref(null)
 const pageError = ref('')
+
+onMounted(() => {
+  userStore.fetchWorks()
+})
 
 function formatDate(iso) {
   const date = new Date(iso)

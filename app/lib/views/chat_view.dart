@@ -42,6 +42,8 @@ class _ChatViewState extends State<ChatView> {
   bool _voiceBusy = false;
   VoiceShellController? _voiceShell;
   String _speechHint = '';
+  Completer<String>? _voiceOnceCompleter;
+  String _voiceOnceTranscript = '';
 
   @override
   void didChangeDependencies() {
@@ -84,14 +86,24 @@ class _ChatViewState extends State<ChatView> {
                 _petState = PetState.idle;
               }
             });
+            _completeVoiceOnceIfNeeded();
+          } else {
+            _completeVoiceOnceIfNeeded();
           }
         },
         onError: (SpeechRecognitionError e) {
           if (!mounted) return;
+          final code = e.errorMsg;
           setState(() {
             _chatListening = false;
             _petState = PetState.idle;
           });
+          _completeVoiceOnceIfNeeded();
+          if (code == 'error_client') {
+            unawaited(_recoverChatSpeech(reinit: true));
+          } else if (code == 'error_busy') {
+            unawaited(_recoverChatSpeech(reinit: false));
+          }
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('语音识别：${e.errorMsg}')),
           );
@@ -170,6 +182,7 @@ class _ChatViewState extends State<ChatView> {
     final shell = _voiceShell ?? context.read<VoiceShellController>();
     shell.beginExclusiveVoiceSession();
     setState(() => _voiceBusy = true);
+    await Future.delayed(const Duration(milliseconds: 280));
     try {
       await body();
     } finally {
@@ -190,22 +203,24 @@ class _ChatViewState extends State<ChatView> {
 
     await _runExclusiveVoice(() async {
       await _chatSpeech.stop();
-      await Future.delayed(const Duration(milliseconds: 120));
+      await Future.delayed(const Duration(milliseconds: 260));
       final completer = Completer<String>();
-      var settled = false;
+      _voiceOnceCompleter = completer;
+      _voiceOnceTranscript = '';
 
-      void finish(String v) {
-        if (settled) return;
-        settled = true;
-        if (!completer.isCompleted) completer.complete(v);
-      }
+      void finish(String v) => _completeVoiceOnceIfNeeded(v);
 
       await _chatSpeech.listen(
         localeId: 'zh_CN',
-        listenOptions: stt.SpeechListenOptions(listenMode: stt.ListenMode.confirmation),
+        listenOptions: stt.SpeechListenOptions(
+          listenMode: stt.ListenMode.confirmation,
+          partialResults: true,
+          cancelOnError: false,
+        ),
         onResult: (result) {
           final words = result.recognizedWords.trim();
           if (words.isEmpty) return;
+          _voiceOnceTranscript = words;
           if (result.finalResult) {
             finish(words);
             unawaited(_chatSpeech.stop());
@@ -217,11 +232,40 @@ class _ChatViewState extends State<ChatView> {
         const Duration(seconds: 25),
         onTimeout: () {
           unawaited(_chatSpeech.stop());
-          return '';
+          final fallback = _voiceOnceTranscript;
+          finish(fallback);
+          return fallback;
         },
       );
       _mergeTranscript(text);
     });
+  }
+
+  void _completeVoiceOnceIfNeeded([String? override]) {
+    final completer = _voiceOnceCompleter;
+    if (completer == null || completer.isCompleted) return;
+    final value = (override ?? _voiceOnceTranscript).trim();
+    _voiceOnceCompleter = null;
+    _voiceOnceTranscript = '';
+    completer.complete(value);
+  }
+
+  Future<void> _recoverChatSpeech({required bool reinit}) async {
+    try {
+      await _chatSpeech.cancel();
+    } catch (_) {}
+    try {
+      await _chatSpeech.stop();
+    } catch (_) {}
+    if (!reinit) return;
+    if (mounted) {
+      setState(() {
+        _chatSpeechReady = false;
+        _speechHint = '语音引擎异常，正在恢复…';
+      });
+    }
+    await Future.delayed(const Duration(milliseconds: 420));
+    await _initChatSpeech();
   }
 
   Future<void> _holdPointerDown() async {
@@ -236,10 +280,14 @@ class _ChatViewState extends State<ChatView> {
     _holdShellExclusive = true;
     try {
       await _chatSpeech.stop();
-      await Future.delayed(const Duration(milliseconds: 80));
+      await Future.delayed(const Duration(milliseconds: 240));
       await _chatSpeech.listen(
         localeId: 'zh_CN',
-        listenOptions: stt.SpeechListenOptions(listenMode: stt.ListenMode.dictation),
+        listenOptions: stt.SpeechListenOptions(
+          listenMode: stt.ListenMode.dictation,
+          partialResults: true,
+          cancelOnError: false,
+        ),
         onResult: (r) {
           _holdBuffer = r.recognizedWords;
         },
