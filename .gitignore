@@ -38,6 +38,7 @@ jademirror/frontend/.env.*.local
 # 本地数据库与生成文件（开发机）
 **/jademirror_auth.db
 **/generated_models/
+**/works_images/
 *.db
 .tmp
 

@@ -149,7 +149,12 @@ export const useUserStore = defineStore('user', {
     async fetchWorks() {
       try {
         const { data } = await http.get('/works')
-        this.works = Array.isArray(data) ? data : []
+        this.works = Array.isArray(data)
+          ? data.map((w) => ({
+              ...w,
+              imageDataURL: w.imageUrl || w.imageDataURL || '',
+            }))
+          : []
       } catch {
         this.works = readWorks()
       }

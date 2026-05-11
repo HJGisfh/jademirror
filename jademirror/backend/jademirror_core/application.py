@@ -22,16 +22,19 @@ PROFILE = 'web'
 
 BASE_DIR = None
 MODELS_DIR = None
+WORKS_IMAGES_DIR = None
 AUTH_DB_PATH = None
 
 bp = Blueprint('jademirror', __name__)
 
 
 def configure_instance(instance_root: Path):
-    global BASE_DIR, MODELS_DIR, AUTH_DB_PATH
+    global BASE_DIR, MODELS_DIR, WORKS_IMAGES_DIR, AUTH_DB_PATH
     BASE_DIR = instance_root
     MODELS_DIR = instance_root / 'generated_models'
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    WORKS_IMAGES_DIR = instance_root / 'works_images'
+    WORKS_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
     auth_db_env = (os.getenv('AUTH_DB_PATH') or '').strip()
     AUTH_DB_PATH = Path(auth_db_env) if auth_db_env else instance_root / 'jademirror_auth.db'
 
@@ -230,7 +233,7 @@ def init_auth_db():
             CREATE TABLE IF NOT EXISTS works (
                 id TEXT PRIMARY KEY,
                 user_id INTEGER NOT NULL,
-                image_data_url TEXT NOT NULL,
+                image_filename TEXT NOT NULL DEFAULT '',
                 jade_name TEXT NOT NULL,
                 jade_dynasty TEXT NOT NULL,
                 jade_description TEXT NOT NULL DEFAULT '',
@@ -2671,7 +2674,7 @@ def list_works():
         [
             {
                 'id': row['id'],
-                'imageDataURL': row['image_data_url'],
+                'imageUrl': f'/api/works/images/{row["image_filename"]}' if row['image_filename'] else '',
                 'jadeName': row['jade_name'],
                 'jadeDynasty': row['jade_dynasty'],
                 'jadeDescription': row['jade_description'],
@@ -2687,6 +2690,47 @@ def list_works():
     )
 
 
+def _decode_and_save_work_image(image_data_url: str, work_id: str) -> str:
+    """Decode a base64 data URL and save to works_images/<work_id>.png.
+    Returns the filename (not full path)."""
+    import base64
+    import re
+
+    img_bytes = None
+    if image_data_url.startswith('data:'):
+        match = re.match(r'data:image/(\w+);base64,(.+)', image_data_url, re.DOTALL)
+        if match:
+            img_format = match.group(1)
+            base64_data = match.group(2)
+            try:
+                img_bytes = base64.b64decode(base64_data)
+            except Exception:
+                pass
+            ext = img_format if img_format in ('png', 'jpg', 'jpeg', 'webp') else 'png'
+        else:
+            ext = 'png'
+    else:
+        ext = 'png'
+
+    if not img_bytes:
+        ext = 'png'
+
+    filename = f'{work_id}.{ext}'
+    filepath = WORKS_IMAGES_DIR / filename
+
+    if img_bytes:
+        filepath.write_bytes(img_bytes)
+    else:
+        # Raw URL case: shouldn't happen in normal flow, but handle it
+        import urllib.request
+        try:
+            urllib.request.urlretrieve(image_data_url, str(filepath))
+        except Exception:
+            pass
+
+    return filename
+
+
 @bp.post('/api/works')
 def save_work():
     auth_result, err = require_auth()
@@ -2698,29 +2742,39 @@ def save_work():
         return json_error('请先登录后再保存藏品。', 401)
 
     data = request.get_json(silent=True) or {}
-    if not data.get('imageDataURL'):
+    image_data_url = str(data.get('imageDataURL', ''))
+    if not image_data_url:
         return json_error('imageDataURL 不能为空。')
 
     work_id = str(data.get('id', ''))
     if not work_id:
         return json_error('id 不能为空。')
 
+    image_filename = _decode_and_save_work_image(image_data_url, work_id)
+
     with db_connect() as conn:
         existing = conn.execute(
-            'SELECT id FROM works WHERE id = ? AND user_id = ?',
+            'SELECT id, image_filename FROM works WHERE id = ? AND user_id = ?',
             (work_id, user_id),
         ).fetchone()
         if existing:
+            old_filename = existing['image_filename']
+            if old_filename and old_filename != image_filename:
+                old_path = WORKS_IMAGES_DIR / old_filename
+                try:
+                    old_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
             conn.execute(
                 """
                 UPDATE works SET
-                    image_data_url = ?, jade_name = ?, jade_dynasty = ?,
+                    image_filename = ?, jade_name = ?, jade_dynasty = ?,
                     jade_description = ?, jade_personality = ?, jade_traits = ?,
                     prompt = ?, date = ?, emotion = ?, audio_params = ?
                 WHERE id = ? AND user_id = ?
                 """,
                 (
-                    str(data.get('imageDataURL', '')),
+                    image_filename,
                     str(data.get('jadeName', '')),
                     str(data.get('jadeDynasty', '')),
                     str(data.get('jadeDescription', '')),
@@ -2738,7 +2792,7 @@ def save_work():
             conn.execute(
                 """
                 INSERT INTO works(
-                    id, user_id, image_data_url, jade_name, jade_dynasty,
+                    id, user_id, image_filename, jade_name, jade_dynasty,
                     jade_description, jade_personality, jade_traits,
                     prompt, date, emotion, audio_params, created_at
                 ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -2746,7 +2800,7 @@ def save_work():
                 (
                     work_id,
                     user_id,
-                    str(data.get('imageDataURL', '')),
+                    image_filename,
                     str(data.get('jadeName', '')),
                     str(data.get('jadeDynasty', '')),
                     str(data.get('jadeDescription', '')),
@@ -2761,7 +2815,7 @@ def save_work():
             )
         conn.commit()
 
-    return jsonify({'id': work_id, 'ok': True})
+    return jsonify({'id': work_id, 'ok': True, 'imageUrl': f'/api/works/images/{image_filename}'})
 
 
 @bp.delete('/api/works/<path:work_id>')
@@ -2775,6 +2829,16 @@ def delete_work(work_id):
         return json_error('请先登录后再删除藏品。', 401)
 
     with db_connect() as conn:
+        row = conn.execute(
+            'SELECT image_filename FROM works WHERE id = ? AND user_id = ?',
+            (work_id, user_id),
+        ).fetchone()
+        if row and row['image_filename']:
+            old_path = WORKS_IMAGES_DIR / row['image_filename']
+            try:
+                old_path.unlink(missing_ok=True)
+            except Exception:
+                pass
         conn.execute(
             'DELETE FROM works WHERE id = ? AND user_id = ?',
             (work_id, user_id),
@@ -2782,5 +2846,14 @@ def delete_work(work_id):
         conn.commit()
 
     return jsonify({'ok': True})
+
+
+@bp.get('/api/works/images/<path:filename>')
+def serve_work_image(filename):
+    safe_name = Path(filename).name
+    filepath = WORKS_IMAGES_DIR / safe_name
+    if not filepath.exists():
+        return json_error('图片文件不存在。', 404)
+    return send_from_directory(str(WORKS_IMAGES_DIR), safe_name)
 
 
