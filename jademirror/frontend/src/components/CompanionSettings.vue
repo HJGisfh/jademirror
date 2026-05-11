@@ -1,7 +1,9 @@
 <script setup>
 import { computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { useAssistantStore } from '@/stores/assistantStore'
 
+const router = useRouter()
 const assistantStore = useAssistantStore()
 
 const memoryPreview = computed(() => assistantStore.filteredMemories.slice(0, 12))
@@ -117,7 +119,11 @@ function close() {
             隐私模式（不保存记忆）
           </label>
           <label class="switch">
-            <input v-model="assistantStore.idleEnabled" type="checkbox" />
+            <input
+              :checked="assistantStore.idleEnabled"
+              type="checkbox"
+              @change="assistantStore.setIdleEnabled($event.target.checked, router)"
+            />
             空闲时主动闲聊
           </label>
         </section>

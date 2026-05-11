@@ -45,6 +45,8 @@ def refresh_settings(profile: str):
     global TC_3D_API_KEY, TC_3D_BASE_URL, ARK_API_KEY, ARK_BASE_URL, ARK_MODEL_ID
     global MESHY_API_KEY, MESHY_BASE_URL
     global DEEPSEEK_ALLOW_MOCK, AUTH_REQUIRED, AUTH_TOKEN_TTL_HOURS
+    global VOLC_TTS_APPID, VOLC_TTS_TOKEN, VOLC_TTS_CLUSTER, VOLC_TTS_VOICE_MAP, VOLC_TTS_MODEL
+    global VOLC_TTS_ACCESS_KEY, VOLC_TTS_RESOURCE_ID, VOLC_TTS_API_KEY
 
     PROFILE = profile
     DEEPSEEK_BASE_URL = os.getenv('DEEPSEEK_BASE_URL', 'https://api.deepseek.com').rstrip('/')
@@ -73,6 +75,21 @@ def refresh_settings(profile: str):
     DEEPSEEK_ALLOW_MOCK = os.getenv('DEEPSEEK_ALLOW_MOCK', '0') == '1'
     AUTH_REQUIRED = os.getenv('AUTH_REQUIRED', '0') == '1'
     AUTH_TOKEN_TTL_HOURS = int(os.getenv('AUTH_TOKEN_TTL_HOURS', '168'))
+    VOLC_TTS_APPID = (os.getenv('VOLC_TTS_APPID') or '').strip()
+    VOLC_TTS_TOKEN = (os.getenv('VOLC_TTS_TOKEN') or '').strip()
+    VOLC_TTS_CLUSTER = (os.getenv('VOLC_TTS_CLUSTER') or 'volcano_tts').strip() or 'volcano_tts'
+    VOLC_TTS_VOICE_MAP = {
+        'default': (os.getenv('VOLC_TTS_VOICE_DEFAULT') or 'zh_female_wenroushunv_emo_v2_mars_bigtts').strip(),
+        'warm': (os.getenv('VOLC_TTS_VOICE_WARM') or 'zh_female_wanwanxiaohe_moon_bigtts').strip(),
+        'bright': (os.getenv('VOLC_TTS_VOICE_BRIGHT') or 'zh_female_tianxinxiaomei_emo_v2_mars_bigtts').strip(),
+        'deep': (os.getenv('VOLC_TTS_VOICE_DEEP') or 'zh_male_jieshuonansheng_mars_bigtts').strip(),
+    }
+    VOLC_TTS_MODEL = (os.getenv('VOLC_TTS_MODEL') or '').strip()
+    # V3 HTTP：若控制台同时提供 Secret Key，可单独填 VOLC_TTS_ACCESS_KEY；否则默认用 VOLC_TTS_TOKEN
+    VOLC_TTS_ACCESS_KEY = (os.getenv('VOLC_TTS_ACCESS_KEY') or '').strip()
+    VOLC_TTS_RESOURCE_ID = (os.getenv('VOLC_TTS_RESOURCE_ID') or '').strip()
+    # 新版控制台「API Key」；WebSocket/HTTP V3 可仅用 X-Api-Key + X-Api-Resource-Id 鉴权
+    VOLC_TTS_API_KEY = (os.getenv('VOLC_TTS_API_KEY') or '').strip()
 
 request_hits = {}
 
@@ -273,13 +290,14 @@ def get_authenticated_user():
 
 
 def require_auth():
+    auth_result = get_authenticated_user()
+    if auth_result:
+        return auth_result, None
+
     if not AUTH_REQUIRED:
         return {'user': {'id': 0, 'username': 'guest', 'nickname': 'Guest'}, 'token': '', 'expires_at': 0}, None
 
-    auth_result = get_authenticated_user()
-    if not auth_result:
-        return None, json_error('请先登录后再继续。', 401)
-    return auth_result, None
+    return None, json_error('请先登录后再继续。', 401)
 
 
 def json_error(message, status=400):
@@ -1322,6 +1340,7 @@ def health():
             'volcengine_3d_configured': bool(ARK_API_KEY),
             'meshy_3d_configured': bool(MESHY_API_KEY),
             'replicate_3d_configured': bool(REPLICATE_API_TOKEN),
+            'volc_tts_configured': _volc_tts_credentials_ok(),
     }
     if PROFILE == 'app':
         payload['mobile_hint'] = (
@@ -2221,6 +2240,385 @@ def generate_3d():
             errors.append(f'Replicate: {e}')
     detail = '；'.join(errors) if errors else '未配置任何3D生成服务'
     return json_error(f'3D生成失败：{detail}。请在 .env 中配置 MESHY_API_KEY 或 ARK_API_KEY 或 TC_3D_API_KEY 或 HUNYUAN3D_API_URL 或 REPLICATE_API_TOKEN。', 503)
+
+
+def _volc_tts_voice_for_persona(persona):
+    """把前端 persona（默认/温润/清亮/低沉）映射成火山 voice_type；未识别时回退默认。"""
+    key = str(persona or 'default').strip().lower()
+    return VOLC_TTS_VOICE_MAP.get(key) or VOLC_TTS_VOICE_MAP['default']
+
+
+def _volc_tts_speed_pitch(mood, persona):
+    """情绪/声线 → speed_ratio / pitch_ratio。豆包接口范围 0.2~3.0；这里收敛到 0.7~1.3 更稳。"""
+    mood_key = str(mood or '').strip().lower()
+    persona_key = str(persona or 'default').strip().lower()
+    mood_table = {
+        'calm': (0.96, 1.0),
+        'comforting': (0.9, 0.96),
+        'cheerful': (1.05, 1.06),
+        'energetic': (1.1, 1.08),
+        'contemplative': (0.9, 0.94),
+        'anxious': (0.92, 0.98),
+        'sad': (0.88, 0.92),
+        'happy': (1.05, 1.06),
+        'curious': (1.02, 1.04),
+        'excited': (1.1, 1.08),
+    }
+    persona_table = {
+        'default': (0.94, 0.96),
+        'warm': (1.0, 1.0),
+        'bright': (1.06, 1.06),
+        'deep': (0.86, 0.88),
+    }
+    mood_speed, mood_pitch = mood_table.get(mood_key, (1.0, 1.0))
+    pose_speed, pose_pitch = persona_table.get(persona_key, (1.0, 1.0))
+    speed = max(0.7, min(1.3, mood_speed * pose_speed))
+    pitch = max(0.7, min(1.3, mood_pitch * pose_pitch))
+    return round(speed, 2), round(pitch, 2)
+
+
+def _volc_tts_credentials_ok():
+    """云端 TTS 是否已配置（新版 API Key 或旧版 AppId+Token）。"""
+    if (VOLC_TTS_API_KEY or '').strip():
+        return True
+    return bool(VOLC_TTS_APPID and VOLC_TTS_TOKEN)
+
+
+def _volc_mood_to_emotion(mood):
+    """多情感音色（*_emo_*）可选的 emotion 关键字。"""
+    key = str(mood or '').strip().lower()
+    return {
+        'cheerful': 'happy',
+        'happy': 'happy',
+        'excited': 'happy',
+        'energetic': 'happy',
+        'sad': 'sad',
+        'comforting': 'calm',
+        'calm': 'calm',
+        'anxious': 'narrator',
+        'contemplative': 'calm',
+        'curious': 'narrator',
+    }.get(key)
+
+
+def _call_volc_tts_ws_bidirection(text, mood, encoding, voice_type):
+    """豆包 WebSocket 双向流式 V3（文档 2.1 wss .../api/v3/tts/bidirection）。"""
+    from .volc_tts_ws_v3 import synthesize_ws_bidirection
+
+    resource_id = _infer_volc_resource_id(voice_type)
+    model = (VOLC_TTS_MODEL or '').strip() or None
+    emotion = _volc_mood_to_emotion(mood) if '_emo_' in voice_type.lower() else None
+    return synthesize_ws_bidirection(
+        text,
+        app_id=VOLC_TTS_APPID,
+        access_key=(VOLC_TTS_ACCESS_KEY or VOLC_TTS_TOKEN or '').strip(),
+        api_key=(VOLC_TTS_API_KEY or '').strip(),
+        resource_id=resource_id,
+        speaker=voice_type,
+        audio_format=encoding,
+        timeout=REQUEST_TIMEOUT,
+        model=model,
+        emotion=emotion,
+    )
+
+
+def _volc_tts_success_code(code):
+    """火山 HTTP 接口成功码可能是 int 或 str（常见为 3000）。"""
+    if code is None:
+        return False
+    return str(code).strip() in {'3000', '0'}
+
+
+def _infer_volc_resource_id(voice_type):
+    """V3 必填 X-Api-Resource-Id：与音色族对齐；可用 VOLC_TTS_RESOURCE_ID 强制覆盖。"""
+    explicit = (VOLC_TTS_RESOURCE_ID or '').strip()
+    if explicit:
+        return explicit
+    vt = str(voice_type or '').lower()
+    if vt.startswith('s_'):
+        return 'seed-icl-2.0'
+    if '_uranus_' in vt or vt.startswith('saturn_'):
+        return 'seed-tts-2.0'
+    return 'seed-tts-1.0'
+
+
+def _parse_volc_v3_ndjson_audio(text_body):
+    """V3 单向 HTTP 返回换行分隔 JSON；code=0 且带 data 为 base64 音频片段，结束码常见 20000000。"""
+    chunks = []
+    for raw_line in (text_body or '').splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        code = obj.get('code')
+        data = obj.get('data')
+        if data and (code == 0 or str(code).strip() == '0'):
+            try:
+                chunks.append(base64.b64decode(data))
+            except (ValueError, TypeError):
+                continue
+        if code == 20000000 or str(code).strip() == '20000000':
+            break
+        if code is not None and code != 0 and str(code).strip() != '0' and not data:
+            message = obj.get('message') or obj.get('Message') or line[:240]
+            raise RuntimeError(f'火山 TTS v3 业务错误 code={code}: {message}')
+    if not chunks:
+        raise RuntimeError('火山 TTS v3 未解析到音频数据（请核对 ResourceId 与 AccessKey）')
+    return b''.join(chunks)
+
+
+def _call_volc_tts_v3(text, voice_type, encoding):
+    """豆包语音合成 HTTP V3 单向接口（新版控制台推荐）；鉴权为 X-Api-* 头。"""
+    api_key = (VOLC_TTS_API_KEY or '').strip()
+    access_key = (VOLC_TTS_ACCESS_KEY or VOLC_TTS_TOKEN or '').strip()
+    if not api_key and not access_key:
+        raise RuntimeError('火山 TTS v3：请配置 VOLC_TTS_API_KEY，或 VOLC_TTS_TOKEN / VOLC_TTS_ACCESS_KEY')
+
+    fmt = encoding if encoding in ('mp3', 'wav', 'pcm', 'ogg_opus') else 'mp3'
+    resource_id = _infer_volc_resource_id(voice_type)
+    payload = {
+        'user': {'uid': 'jademirror_web'},
+        'req_params': {
+            'text': text,
+            'speaker': voice_type,
+            'audio_params': {
+                'format': fmt,
+                'sample_rate': 24000,
+            },
+        },
+    }
+    if api_key:
+        headers = {
+            'Content-Type': 'application/json',
+            'X-Api-Key': api_key,
+            'X-Api-Resource-Id': resource_id,
+        }
+    else:
+        headers = {
+            'Content-Type': 'application/json',
+            'X-Api-App-Id': str(VOLC_TTS_APPID).strip(),
+            'X-Api-Access-Key': access_key,
+            'X-Api-Resource-Id': resource_id,
+        }
+    try:
+        response = requests.post(
+            'https://openspeech.bytedance.com/api/v3/tts/unidirectional',
+            headers=headers,
+            json=payload,
+            timeout=REQUEST_TIMEOUT,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(f'火山 TTS v3 网络异常：{exc}') from exc
+
+    if response.status_code >= 400:
+        raise RuntimeError(f'火山 TTS v3 HTTP {response.status_code}: {response.text[:400]}')
+
+    return _parse_volc_v3_ndjson_audio(response.text)
+
+
+def _volc_tts_cluster_candidates():
+    """按顺序尝试 cluster；控制台给的与默认不一致时可多试几个。"""
+    ordered = []
+    primary = (VOLC_TTS_CLUSTER or 'volcano_tts').strip()
+    if primary:
+        ordered.append(primary)
+    fb = (os.getenv('VOLC_TTS_CLUSTER_FALLBACK') or '').strip()
+    for part in fb.split(','):
+        p = part.strip()
+        if p and p not in ordered:
+            ordered.append(p)
+    for alt in ('volcano_tts', 'volcano_icl'):
+        if alt not in ordered:
+            ordered.append(alt)
+    return ordered
+
+
+def _call_volc_tts_once(text, persona, mood, encoding, cluster):
+    """单次 cluster 调用；失败抛 RuntimeError。"""
+    voice_type = _volc_tts_voice_for_persona(persona)
+    speed_ratio, pitch_ratio = _volc_tts_speed_pitch(mood, persona)
+    request_block = {
+        'reqid': secrets.token_hex(12),
+        'text': text,
+        'text_type': 'plain',
+        'operation': 'query',
+        'with_frontend': 1,
+    }
+    if VOLC_TTS_MODEL:
+        request_block['model'] = VOLC_TTS_MODEL
+    payload = {
+        'app': {
+            'appid': VOLC_TTS_APPID,
+            'token': VOLC_TTS_TOKEN,
+            'cluster': cluster,
+        },
+        'user': {
+            'uid': 'jademirror_web',
+        },
+        'audio': {
+            'voice_type': voice_type,
+            'encoding': encoding,
+            'speed_ratio': speed_ratio,
+            'pitch_ratio': pitch_ratio,
+            'volume_ratio': 1.0,
+        },
+        'request': request_block,
+    }
+    headers = {
+        # 注意：火山豆包要求 Bearer 与 token 之间用「分号」分隔
+        'Authorization': f'Bearer;{VOLC_TTS_TOKEN}',
+        'Content-Type': 'application/json',
+    }
+    try:
+        response = requests.post(
+            'https://openspeech.bytedance.com/api/v1/tts',
+            headers=headers,
+            json=payload,
+            timeout=REQUEST_TIMEOUT,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(f'火山 TTS 网络异常：{exc}') from exc
+
+    if response.status_code >= 400:
+        raise RuntimeError(f'火山 TTS HTTP {response.status_code}: {response.text[:200]}')
+
+    try:
+        result = response.json()
+    except ValueError as exc:
+        raise RuntimeError(f'火山 TTS 返回非 JSON：{exc}') from exc
+
+    code = result.get('code')
+    if not _volc_tts_success_code(code):
+        message = result.get('message') or result.get('Message') or '未知错误'
+        raise RuntimeError(f'火山 TTS 业务错误 code={code}: {message}')
+
+    audio_b64 = result.get('data') or ''
+    if not audio_b64:
+        raise RuntimeError('火山 TTS 返回成功但 data 为空')
+
+    try:
+        return base64.b64decode(audio_b64)
+    except (ValueError, TypeError) as exc:
+        raise RuntimeError(f'火山 TTS base64 解码失败：{exc}') from exc
+
+
+def _call_volc_tts(text, persona='default', mood='', encoding='mp3'):
+    """优先 WebSocket 双向流式 V3；其次 HTTP V3；最后旧版 V1 cluster。"""
+    if not _volc_tts_credentials_ok():
+        raise RuntimeError('火山 TTS 未配置：请在 .env 填写 VOLC_TTS_API_KEY（推荐）或 VOLC_TTS_APPID / VOLC_TTS_TOKEN')
+
+    voice_type = _volc_tts_voice_for_persona(persona)
+    ws_error = None
+    use_ws = os.getenv('VOLC_TTS_USE_WS', '1').strip().lower() not in ('0', 'false', 'no', 'off')
+    if use_ws:
+        try:
+            return _call_volc_tts_ws_bidirection(text, mood, encoding, voice_type)
+        except RuntimeError as err:
+            ws_error = err
+            if os.getenv('VOLC_TTS_WS_FALLBACK_HTTP', '1').strip().lower() in ('0', 'false', 'no', 'off'):
+                raise
+
+    v3_error = None
+    use_v3 = os.getenv('VOLC_TTS_USE_V3', '1').strip().lower() not in ('0', 'false', 'no', 'off')
+    if use_v3:
+        try:
+            return _call_volc_tts_v3(text, voice_type, encoding)
+        except RuntimeError as err:
+            v3_error = err
+            if os.getenv('VOLC_TTS_V3_FALLBACK_V1', '1').strip().lower() in ('0', 'false', 'no', 'off'):
+                raise
+
+    last_error = None
+    for cluster in _volc_tts_cluster_candidates():
+        try:
+            return _call_volc_tts_once(text, persona, mood, encoding, cluster)
+        except RuntimeError as error:
+            last_error = error
+            msg = str(error).lower()
+            if any(
+                token in msg
+                for token in (
+                    'init engine',
+                    '3050',
+                    'voice_type',
+                    'cluster',
+                    'resource',
+                    'invalid',
+                    'not found',
+                )
+            ):
+                continue
+            raise
+    if last_error:
+        parts = []
+        if ws_error:
+            parts.append(f'WebSocket：{ws_error}')
+        if v3_error:
+            parts.append(f'HTTP V3：{v3_error}')
+        parts.append(f'V1：{last_error}')
+        raise RuntimeError('；'.join(parts)) from last_error
+    if ws_error or v3_error:
+        parts = []
+        if ws_error:
+            parts.append(f'WebSocket：{ws_error}')
+        if v3_error:
+            parts.append(f'HTTP V3：{v3_error}')
+        raise RuntimeError('；'.join(parts))
+    raise RuntimeError('火山 TTS：cluster 列表为空')
+
+
+@bp.post('/api/voice/tts')
+def voice_tts():
+    """前端语音合成代理：把文本送到火山豆包 TTS，返回 audio/mpeg 二进制。
+
+    入参 JSON：
+      - text:    合成文本（必填，最长 600 字以内）
+      - persona: default / warm / bright / deep（对应童子的四种声线）
+      - mood:    情绪基调（calm/cheerful/...），影响 speed_ratio 与 pitch_ratio
+      - encoding: mp3 (默认) / wav / pcm
+    """
+    if not check_rate_limit('voice-tts'):
+        return json_error('语音合成请求过于频繁，请稍后再试。', 429)
+
+    _, auth_error = require_auth()
+    if auth_error:
+        return auth_error
+
+    data = request.get_json(silent=True) or {}
+    text = str(data.get('text') or '').strip()
+    persona = str(data.get('persona') or 'default').strip().lower()
+    mood = str(data.get('mood') or '').strip().lower()
+    encoding = str(data.get('encoding') or 'mp3').strip().lower()
+    if encoding not in ('mp3', 'wav', 'pcm', 'ogg_opus'):
+        encoding = 'mp3'
+
+    if not text:
+        return json_error('text 不能为空。')
+    # 防止前端把超长 LLM 回复一次性发过来烧额度
+    if len(text) > 600:
+        text = text[:600]
+
+    if not _volc_tts_credentials_ok():
+        return json_error('云端 TTS 未配置，前端请回退到浏览器原生语音。', 503)
+
+    try:
+        audio_bytes = _call_volc_tts(text, persona=persona, mood=mood, encoding=encoding)
+    except RuntimeError as error:
+        return json_error(str(error), 502)
+
+    mime = {
+        'mp3': 'audio/mpeg',
+        'wav': 'audio/wav',
+        'pcm': 'audio/L16',
+        'ogg_opus': 'audio/ogg',
+    }.get(encoding, 'audio/mpeg')
+
+    from flask import Response
+
+    return Response(audio_bytes, mimetype=mime, headers={'Cache-Control': 'no-store'})
 
 
 @bp.get('/api/3d/models/<path:filename>')

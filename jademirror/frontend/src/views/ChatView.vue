@@ -3,12 +3,18 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import ChatBubble from '@/components/ChatBubble.vue'
 import { useApiStore } from '@/stores/apiStore'
+import { useAssistantStore } from '@/stores/assistantStore'
 import { useUserStore } from '@/stores/userStore'
 import { useVoiceStore } from '@/stores/voiceStore'
 
 const userStore = useUserStore()
 const apiStore = useApiStore()
+const assistantStore = useAssistantStore()
 const voiceStore = useVoiceStore()
+
+function syncChatVoicePersona() {
+  voiceStore.setPersona(assistantStore.voicePersona)
+}
 const router = useRouter()
 
 const jade = computed(() => userStore.matchedJade)
@@ -101,7 +107,7 @@ async function startVoiceInput() {
   mergeTranscriptToDraft(transcript)
 }
 
-function beginHoldToTalk() {
+async function beginHoldToTalk() {
   if (apiStore.chatLoading || !jade.value || !voiceStore.recognitionSupported) {
     return
   }
@@ -110,7 +116,7 @@ function beginHoldToTalk() {
   }
 
   voiceStore.stopSpeaking()
-  const started = voiceStore.startHoldListening()
+  const started = await voiceStore.startHoldListening()
   if (!started) {
     return
   }
@@ -246,8 +252,16 @@ watch(
   },
 )
 
+watch(
+  () => assistantStore.voicePersona,
+  () => {
+    syncChatVoicePersona()
+  },
+)
+
 onMounted(() => {
   voiceStore.init()
+  syncChatVoicePersona()
   if (!jade.value) {
     router.push('/test')
     return

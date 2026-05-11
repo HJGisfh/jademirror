@@ -1,7 +1,9 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import pinia from '@/stores'
-import { useUserStore } from '@/stores/userStore'
+import { useAudioStore } from '@/stores/audioStore'
 import { useAuthStore } from '@/stores/authStore'
+import { useUserStore } from '@/stores/userStore'
+import { useVoiceStore } from '@/stores/voiceStore'
 
 const routes = [
   {
@@ -53,6 +55,15 @@ const guardNames = new Set(['Result', 'Chat', 'Generate'])
 const publicNames = new Set(['Login'])
 
 router.beforeEach(async (to) => {
+  try {
+    const audioStore = useAudioStore(pinia)
+    const voiceStore = useVoiceStore(pinia)
+    audioStore.stopAllSounds()
+    voiceStore.stopSpeaking()
+  } catch {
+    // Pinia 未挂载等情况下忽略
+  }
+
   const userStore = useUserStore(pinia)
   const authStore = useAuthStore(pinia)
 

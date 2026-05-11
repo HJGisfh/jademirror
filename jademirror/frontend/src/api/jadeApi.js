@@ -49,3 +49,21 @@ export async function exportAssistantMemories() {
   const { data } = await http.get('/assistant/memories/export')
   return data
 }
+
+/**
+ * 火山豆包 TTS 代理：把文本/persona/mood 发到后端，拿回 mp3 二进制 Blob。
+ * 失败抛 Error 由调用方决定回退。
+ */
+export async function synthesizeVoiceCloud({ text, persona = 'default', mood = '' }) {
+  const { data } = await http.post(
+    '/voice/tts',
+    { text, persona, mood, encoding: 'mp3' },
+    { responseType: 'blob' },
+  )
+  return data
+}
+
+export async function fetchHealth() {
+  const { data } = await http.get('/health')
+  return data
+}

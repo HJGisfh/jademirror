@@ -27,7 +27,16 @@ http.interceptors.response.use(
   (response) => response,
   (error) => {
     const backendError = error.response?.data?.error
-    return Promise.reject(new Error(backendError || error.message || '请求失败'))
+    const message = backendError || error.message || '请求失败'
+    const wrapped = new Error(message)
+    // 供 authStore 等区分「未授权」与「网络/超时/5xx」，避免刷新时误清空登录态
+    if (error.response?.status != null) {
+      wrapped.status = error.response.status
+    }
+    if (error.code) {
+      wrapped.code = error.code
+    }
+    return Promise.reject(wrapped)
   },
 )
 

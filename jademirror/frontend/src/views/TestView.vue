@@ -139,10 +139,21 @@ watch(
   { deep: true }
 )
 
+// 仅当「当前题、当前索引未变」时答案从空→有值才自动下一题；换题（上一题/点步骤条）会改变 idx/qid，不得误触发
 watch(
-  () => answers[currentQuestion.value?.id],
-  (newVal, oldVal) => {
-    if (newVal && !oldVal && !isLastQuestion.value) {
+  () => ({
+    idx: currentIndex.value,
+    qid: currentQuestion.value?.id,
+    ans: currentQuestion.value ? answers[currentQuestion.value.id] : undefined,
+  }),
+  (cur, prev) => {
+    if (!cur.qid || !prev) {
+      return
+    }
+    if (cur.idx !== prev.idx || cur.qid !== prev.qid) {
+      return
+    }
+    if (cur.ans && !prev.ans && !isLastQuestion.value) {
       setTimeout(() => goToQuestion(currentIndex.value + 1), 400)
     }
   },

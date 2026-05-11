@@ -15,8 +15,12 @@ const holdTalking = ref(false)
 const showSettings = ref(false)
 const showMemories = ref(false)
 
-// 拖拽相关状态
-const isDragging = ref(false)
+// 拖拽相关：用「是否移动超过阈值」区分拖动与点击（click 在 pointerup 之后，不能再看 isDragging）
+const DRAG_MOVE_THRESHOLD_PX = 10
+const dragListen = ref(false)
+const dragDidMove = ref(false)
+const dragOriginX = ref(0)
+const dragOriginY = ref(0)
 const dragStartX = ref(0)
 const dragStartY = ref(0)
 // 初始位置：右下角，留出足够边距
@@ -96,11 +100,11 @@ async function sendDraft() {
   await assistantStore.handleUserText(text, router)
 }
 
-function beginHoldToTalk() {
+async function beginHoldToTalk() {
   if (assistantStore.busy || holdTalking.value || !voiceStore.recognitionSupported) {
     return
   }
-  const started = voiceStore.startHoldListening()
+  const started = await voiceStore.startHoldListening()
   if (!started) {
     return
   }
@@ -121,7 +125,7 @@ async function endHoldToTalk() {
 }
 
 async function nudgeNow() {
-  await assistantStore.triggerIdleNudge(router)
+  await assistantStore.triggerIdleNudge(router, { force: true })
 }
 
 async function refreshMemories() {
@@ -154,41 +158,56 @@ function startDrag(event) {
   if (assistantStore.open && event.target.closest('.panel')) {
     return
   }
-  
-  isDragging.value = true
+
+  dragListen.value = true
+  dragDidMove.value = false
+  dragOriginX.value = event.clientX
+  dragOriginY.value = event.clientY
   dragStartX.value = event.clientX - position.value.x
   dragStartY.value = event.clientY - position.value.y
-  
+
   document.addEventListener('pointermove', onDrag)
   document.addEventListener('pointerup', stopDrag)
+  document.addEventListener('pointercancel', stopDrag)
 }
 
 function onDrag(event) {
-  if (!isDragging.value) return
-  
+  if (!dragListen.value) {
+    return
+  }
+
+  const dx = event.clientX - dragOriginX.value
+  const dy = event.clientY - dragOriginY.value
+  if (dx * dx + dy * dy > DRAG_MOVE_THRESHOLD_PX * DRAG_MOVE_THRESHOLD_PX) {
+    dragDidMove.value = true
+  }
+
   const newX = event.clientX - dragStartX.value
   const newY = event.clientY - dragStartY.value
-  
+
   // 限制在窗口范围内
   const maxX = window.innerWidth - 80
   const maxY = window.innerHeight - 80
-  
+
   position.value = {
     x: Math.max(0, Math.min(newX, maxX)),
-    y: Math.max(0, Math.min(newY, maxY))
+    y: Math.max(0, Math.min(newY, maxY)),
   }
 }
 
 function stopDrag() {
-  isDragging.value = false
+  dragListen.value = false
   document.removeEventListener('pointermove', onDrag)
   document.removeEventListener('pointerup', stopDrag)
+  document.removeEventListener('pointercancel', stopDrag)
 }
 
 function togglePanel() {
-  if (!isDragging.value) {
-    assistantStore.open = !assistantStore.open
+  if (dragDidMove.value) {
+    dragDidMove.value = false
+    return
   }
+  assistantStore.open = !assistantStore.open
 }
 
 onMounted(() => {
@@ -201,6 +220,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleGlobalActivity, true)
   document.removeEventListener('pointermove', onDrag)
   document.removeEventListener('pointerup', stopDrag)
+  document.removeEventListener('pointercancel', stopDrag)
   holdTalking.value = false
   voiceStore.stopListening()
   assistantStore.teardown()
@@ -212,7 +232,7 @@ onBeforeUnmount(() => {
     v-if="authStore.isLoggedIn"
     ref="companionRef"
     class="companion" 
-    :class="{ expanded: assistantStore.open, dragging: isDragging }"
+    :class="{ expanded: assistantStore.open, dragging: dragListen && dragDidMove }"
     :style="{ left: position.x + 'px', top: position.y + 'px' }"
   >
     <!-- 小动物形象（收起状态） -->
@@ -335,7 +355,11 @@ onBeforeUnmount(() => {
             自动语音播报
           </label>
           <label class="switch">
-            <input v-model="assistantStore.idleEnabled" type="checkbox" @change="assistantStore.touchActivity(router)" />
+            <input
+              :checked="assistantStore.idleEnabled"
+              type="checkbox"
+              @change="assistantStore.setIdleEnabled($event.target.checked, router)"
+            />
             空闲时主动闲聊
           </label>
           <div class="persona-row">
@@ -371,7 +395,8 @@ onBeforeUnmount(() => {
             </button>
           </div>
           <div class="memory-list">
-            <p v-if="!memoryPreview.length" class="memory-empty text-muted">暂无记忆片段</p>
+            <p v-if="assistantStore.memoryLoading" class="memory-empty text-muted">正在同步记忆…</p>
+            <p v-else-if="!memoryPreview.length" class="memory-empty text-muted">暂无记忆片段</p>
             <div v-for="memory in memoryPreview" :key="memory.id" class="memory-row">
               <p class="memory-text">{{ memory.content }}</p>
               <div class="memory-actions">

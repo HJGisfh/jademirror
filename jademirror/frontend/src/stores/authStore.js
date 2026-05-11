@@ -36,10 +36,28 @@ export const useAuthStore = defineStore('auth', {
     sessionChecked: false,
   }),
   getters: {
-    isLoggedIn: (state) => !!state.currentUser && !!state.token,
-    displayName: (state) => state.currentUser?.nickname || state.currentUser?.username || '未登录',
+    // 以令牌为准：避免仅有 token、用户信息尚未写回内存时被当成未登录（刷新 / hydrates 时序）
+    isLoggedIn: (state) => Boolean(state.token),
+    displayName: (state) =>
+      state.currentUser?.nickname ||
+      state.currentUser?.username ||
+      (state.token ? '已登录' : '未登录'),
   },
   actions: {
+    /**
+     * 从 localStorage 拉回 token/user，避免 Pinia 内存与存储不一致时误判未登录。
+     * 禁止在「未同步」时用 clearAuth()，否则会清空仍存在于 localStorage 的令牌。
+     */
+    hydrateFromStorage() {
+      const t = readToken()
+      const u = readJSON(AUTH_USER_KEY, null)
+      if (t) {
+        this.token = t
+      }
+      if (u && typeof u === 'object') {
+        this.currentUser = u
+      }
+    },
     applyAuth({ user, token }) {
       this.currentUser = user || null
       this.token = token || ''
@@ -81,6 +99,7 @@ export const useAuthStore = defineStore('auth', {
       return data.user
     },
     async fetchMe() {
+      this.hydrateFromStorage()
       if (!this.token) {
         this.clearAuth()
         return null
@@ -95,6 +114,9 @@ export const useAuthStore = defineStore('auth', {
         return this.isLoggedIn
       }
 
+      // 必须先同步存储，再判断是否有令牌；否则内存为空时会误 clearAuth 抹掉 localStorage 里的有效 token
+      this.hydrateFromStorage()
+
       if (!this.token) {
         this.sessionChecked = true
         this.clearAuth()
@@ -102,13 +124,23 @@ export const useAuthStore = defineStore('auth', {
       }
 
       try {
-        await this.fetchMe()
+        const user = await this.fetchMe()
         this.sessionChecked = true
+        if (user === null && !this.token) {
+          return false
+        }
         return true
-      } catch {
-        this.clearAuth()
+      } catch (error) {
+        const status = error?.status
+        // 仅当服务端明确拒绝会话时再清空本地令牌（过期、无效 token）
+        if (status === 401 || status === 403) {
+          this.clearAuth()
+          this.sessionChecked = true
+          return false
+        }
+        // 网络异常、超时、5xx、后端未启动等：保留令牌，不把用户踢回登录页
         this.sessionChecked = true
-        return false
+        return !!this.token
       }
     },
     async logout() {
