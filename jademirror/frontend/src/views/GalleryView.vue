@@ -44,8 +44,12 @@ const autoTour = computed(() => assistantStore.galleryTourAuto)
 const selectedWork = ref(null)
 const pageError = ref('')
 
-onMounted(() => {
-  userStore.fetchWorks()
+onMounted(async () => {
+  try {
+    await userStore.fetchWorks({ preferRemote: true })
+  } catch (error) {
+    pageError.value = error.message || '藏室加载失败，请稍后重试。'
+  }
 })
 
 function formatDate(iso) {

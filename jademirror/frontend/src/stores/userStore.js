@@ -4,6 +4,7 @@ import http from '@/api/http'
 
 const USER_STATE_STORAGE_KEY = 'jademirror-user-state-v1'
 const AUTH_USER_KEY = 'jademirror-auth-user-v1'
+const AUTH_TOKEN_KEY = 'jademirror-auth-token-v1'
 const WORK_STORAGE_PREFIX = 'jademirror-works-v2'
 
 function createDefaultUserState() {
@@ -57,6 +58,14 @@ function readAuthUserId() {
 function worksStorageKey(userId = '') {
   const key = userId || readAuthUserId() || 'guest'
   return `${WORK_STORAGE_PREFIX}:${key}`
+}
+
+function readAuthToken() {
+  try {
+    return localStorage.getItem(AUTH_TOKEN_KEY) || ''
+  } catch {
+    return ''
+  }
 }
 
 function readWorks(userId = '') {
@@ -170,7 +179,8 @@ export const useUserStore = defineStore('user', {
         // ignore storage failures
       }
     },
-    async fetchWorks() {
+    async fetchWorks(options = {}) {
+      const preferRemote = options.preferRemote ?? Boolean(readAuthToken())
       try {
         const { data } = await http.get('/works')
         this.works = Array.isArray(data)
@@ -180,14 +190,21 @@ export const useUserStore = defineStore('user', {
             }))
           : []
         this.persistWorks()
-      } catch {
+        return this.works
+      } catch (error) {
+        if (preferRemote) {
+          throw error
+        }
         this.works = readWorks()
+        return this.works
       }
     },
-    async saveCurrentWork() {
+    async saveCurrentWork(options = {}) {
       if (!this.generatedImageDataUrl || !this.matchedJade) {
         return null
       }
+
+      const requireRemote = options.requireRemote ?? Boolean(readAuthToken())
 
       const newWork = {
         id: createWorkId(),
@@ -203,14 +220,21 @@ export const useUserStore = defineStore('user', {
         audioParams: this.matchedJade.audioParams,
       }
 
+      if (requireRemote) {
+        const { data } = await http.post('/works', newWork)
+        if (data?.imageUrl) {
+          newWork.imageDataURL = data.imageUrl
+        }
+      } else {
+        try {
+          await http.post('/works', newWork)
+        } catch {
+          // ignore if not logged in
+        }
+      }
+
       this.works = [newWork, ...this.works]
       this.persistWorks()
-
-      try {
-        await http.post('/works', newWork)
-      } catch {
-        // server save failed, keep local copy
-      }
       return newWork
     },
     async removeWork(workId) {

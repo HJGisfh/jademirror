@@ -53,6 +53,7 @@ const originalImageUrl = ref(userStore.generatedImageOriginalUrl || '')
 const pageError = ref('')
 const saveNotice = ref('')
 const touchPulse = ref(false)
+const saving = ref(false)
 
 async function generateJade() {
   if (!jade.value) return
@@ -98,9 +99,18 @@ async function replayTouchSound() {
   }
 }
 
-function saveToGallery() {
-  const work = userStore.saveCurrentWork()
-  saveNotice.value = work ? '已保存到个人藏室。' : '请先生成专属玉图像。'
+async function saveToGallery() {
+  saveNotice.value = ''
+  pageError.value = ''
+  saving.value = true
+  try {
+    const work = await userStore.saveCurrentWork({ requireRemote: true })
+    saveNotice.value = work ? '已保存到个人藏室。' : '请先生成专属玉图像。'
+  } catch (error) {
+    pageError.value = error.message || '保存失败，请稍后重试。'
+  } finally {
+    saving.value = false
+  }
 }
 
 async function primeAudioOnce() {
@@ -124,10 +134,12 @@ onBeforeUnmount(() => {
           <p class="text-muted">{{ jade.description }}</p>
         </div>
         <div class="actions-row">
-          <button type="button" class="jade-button primary" :disabled="apiStore.imageLoading" @click="generateJade">
+          <button type="button" class="jade-button primary" :disabled="apiStore.imageLoading || saving" @click="generateJade">
             {{ apiStore.imageLoading ? '生成中...' : '生成专属玉' }}
           </button>
-          <button type="button" class="jade-button secondary" @click="saveToGallery">保存至藏室</button>
+          <button type="button" class="jade-button secondary" :disabled="saving" @click="saveToGallery">
+            {{ saving ? '保存中...' : '保存至藏室' }}
+          </button>
         </div>
       </div>
       <p v-if="saveNotice" class="success">{{ saveNotice }}</p>

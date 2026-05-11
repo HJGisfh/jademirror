@@ -62,7 +62,7 @@ export const useAuthStore = defineStore('auth', {
       try {
         const { useUserStore } = await import('./userStore')
         const userStore = useUserStore()
-        await userStore.fetchWorks()
+        await userStore.fetchWorks({ preferRemote: true })
       } catch {
         // ignore sync failures
       }

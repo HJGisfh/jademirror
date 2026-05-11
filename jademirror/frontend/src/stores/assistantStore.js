@@ -465,7 +465,7 @@ export const useAssistantStore = defineStore('assistant', {
           await this.generateJadeByVoice(router)
           break
         case 'save_to_gallery':
-          this.saveWorkByVoice(router)
+          await this.saveWorkByVoice(router)
           break
         case 'start_gallery_tour': {
           const userStore = useUserStore()
@@ -940,12 +940,25 @@ export const useAssistantStore = defineStore('assistant', {
         if (this.autoGuide && router) router.push('/generate'); return false
       }
     },
-    saveWorkByVoice(router) {
-      const userStore = useUserStore(); const work = userStore.saveCurrentWork()
-      if (!work) { this.appendMessage('assistant', '还没有可保存的专属玉。'); this.speak('还没有可保存的专属玉。'); return false }
-      this.appendMessage('assistant', `已帮你保存到展厅：${work.jadeDynasty}代意象的${work.jadeName}。`)
-      this.speak(`已帮你保存到展厅：${work.jadeDynasty}代意象的${work.jadeName}。`)
-      if (this.autoGuide && router) router.push('/gallery'); return true
+    async saveWorkByVoice(router) {
+      const userStore = useUserStore()
+      try {
+        const work = await userStore.saveCurrentWork({ requireRemote: true })
+        if (!work) {
+          this.appendMessage('assistant', '还没有可保存的专属玉。')
+          this.speak('还没有可保存的专属玉。')
+          return false
+        }
+        this.appendMessage('assistant', `已帮你保存到展厅：${work.jadeDynasty}代意象的${work.jadeName}。`)
+        this.speak(`已帮你保存到展厅：${work.jadeDynasty}代意象的${work.jadeName}。`)
+        if (this.autoGuide && router) router.push('/gallery')
+        return true
+      } catch (error) {
+        const message = error.message || '保存失败，请稍后重试。'
+        this.appendMessage('assistant', message)
+        this.speak(message)
+        return false
+      }
     },
     removeWorkByVoice(index, router) {
       const userStore = useUserStore()
