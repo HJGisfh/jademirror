@@ -19,6 +19,37 @@ import { buildImagePrompt } from '@/utils/prompt'
 
 const IDLE_NUDGE_MS = 1000 * 90
 
+/** 与后端 save_memory 使用的类型对齐，避免大小写/别名导致筛选与统计为 0 */
+function normalizeMemoryType(value) {
+  const t = String(value ?? '')
+    .trim()
+    .toLowerCase()
+  if (t === 'emotion' || t === 'emotions' || t === 'mood') {
+    return 'emotion'
+  }
+  if (t === 'preference' || t === 'preferences' || t === 'pref') {
+    return 'preference'
+  }
+  if (!t) {
+    return 'preference'
+  }
+  return t
+}
+
+function normalizeMemoryRow(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return raw
+  }
+  const pinned = raw.pinned === true || raw.pinned === 1 || raw.pinned === '1'
+  return {
+    ...raw,
+    id: raw.id,
+    memory_type: normalizeMemoryType(raw.memory_type),
+    pinned,
+    content: String(raw.content ?? ''),
+  }
+}
+
 function normalizeStage(routeName) {
   const map = {
     Home: 'home', Test: 'test', Result: 'result', Chat: 'chat',
@@ -71,14 +102,22 @@ export const useAssistantStore = defineStore('assistant', {
     currentQuestion: (state) =>
       state.guidedTestActive ? quickTestQuestions[state.guidedQuestionIndex] : null,
     filteredMemories: (state) => {
-      if (state.memoryFilter === 'all') return state.memories
-      return state.memories.filter((item) => item.memory_type === state.memoryFilter)
+      if (state.memoryFilter === 'all') {
+        return state.memories
+      }
+      return state.memories.filter(
+        (item) => normalizeMemoryType(item.memory_type) === state.memoryFilter,
+      )
     },
     memoryTypeCounts: (state) => {
       const counts = { all: state.memories.length, preference: 0, emotion: 0 }
       for (const item of state.memories) {
-        if (item.memory_type === 'preference') counts.preference += 1
-        else if (item.memory_type === 'emotion') counts.emotion += 1
+        const t = normalizeMemoryType(item.memory_type)
+        if (t === 'preference') {
+          counts.preference += 1
+        } else if (t === 'emotion') {
+          counts.emotion += 1
+        }
       }
       return counts
     },
@@ -587,6 +626,9 @@ export const useAssistantStore = defineStore('assistant', {
       } finally {
         this.busy = false
         this.touchActivity(router)
+        if (!this.privacyMode) {
+          void this.loadMemories()
+        }
       }
     },
 
@@ -685,6 +727,9 @@ export const useAssistantStore = defineStore('assistant', {
       } finally {
         this.busy = false
         this.touchActivity(router)
+        if (!this.privacyMode) {
+          void this.loadMemories()
+        }
       }
     },
 
@@ -762,18 +807,62 @@ export const useAssistantStore = defineStore('assistant', {
       this.idleTimerId = window.setTimeout(() => { this.triggerIdleNudge(router) }, IDLE_NUDGE_MS)
     },
 
-    async triggerIdleNudge(router) {
-      if (!this.idleEnabled || this.busy || this.stage === 'login') { this.touchActivity(router); return }
-      this.busy = true; this.lastError = ''
+    /** @param {import('vue-router').Router} [router] */
+    async triggerIdleNudge(router, opts = {}) {
+      const forceManual = opts && opts.force === true
+      if (this.stage === 'login') {
+        this.clearIdleTimer()
+        return
+      }
+      if (!forceManual) {
+        if (!this.idleEnabled) {
+          this.clearIdleTimer()
+          return
+        }
+        if (this.busy) {
+          this.touchActivity(router)
+          return
+        }
+      } else if (this.busy) {
+        return
+      }
+      this.clearIdleTimer()
+      this.busy = true
+      this.lastError = ''
       try {
         const data = await requestAssistantProactive({ stage: this.stage, context: this.buildAgentContext() })
+        if (!forceManual && !this.idleEnabled) {
+          return
+        }
         const reply = data.reply || '我在这里，想继续哪一步，我都陪你。'
-        this.applyEmotionTone(data.emotion); this.appendMessage('assistant', reply); this.speak(reply)
-        this.lastMemoryDigest = data.memory_digest || this.lastMemoryDigest; this.idleNudgeCount += 1
+        this.applyEmotionTone(data.emotion)
+        this.appendMessage('assistant', reply)
+        this.speak(reply)
+        this.lastMemoryDigest = data.memory_digest || this.lastMemoryDigest
+        this.idleNudgeCount += 1
         if (data.tool_calls) await this.executeToolCalls(data.tool_calls, router)
         if (this.autoGuide && data.suggested_route && router) router.push(data.suggested_route)
-      } catch (error) { this.lastError = error.message || '主动关怀触发失败。' }
-      finally { this.busy = false; this.touchActivity(router) }
+      } catch (error) {
+        this.lastError = error.message || '主动关怀触发失败。'
+      } finally {
+        this.busy = false
+        if (this.idleEnabled) {
+          this.touchActivity(router)
+        }
+        if (!this.privacyMode) {
+          void this.loadMemories()
+        }
+      }
+    },
+
+    /** 统一入口：关闭时立刻取消排程，避免仅用 v-model 时定时器仍触发 */
+    setIdleEnabled(enabled, router) {
+      this.idleEnabled = Boolean(enabled)
+      if (!this.idleEnabled) {
+        this.clearIdleTimer()
+        return
+      }
+      this.touchActivity(router)
     },
 
     // ═══════════════════════════════════════════
@@ -924,32 +1013,67 @@ export const useAssistantStore = defineStore('assistant', {
     // Memory
     // ═══════════════════════════════════════════
     async loadMemories() {
-      if (this.privacyMode) { this.memories = []; this.lastMemoryDigest = ''; this.memoryLoading = false; return }
-      this.memoryLoading = true; this.lastError = ''
+      if (this.privacyMode) {
+        this.memories = []
+        this.lastMemoryDigest = ''
+        this.memoryLoading = false
+        return
+      }
+      this.memoryLoading = true
+      this.lastError = ''
       try {
         const data = await fetchAssistantMemories()
-        this.memories = Array.isArray(data.memories) ? data.memories : []; this.lastMemoryDigest = data.digest || this.lastMemoryDigest
-      } catch (error) { this.lastError = error.message || '记忆加载失败。' }
-      finally { this.memoryLoading = false }
+        const list = Array.isArray(data.memories) ? data.memories : []
+        this.memories = list.map((row) => normalizeMemoryRow(row))
+        this.lastMemoryDigest = data.digest != null ? String(data.digest) : this.lastMemoryDigest
+      } catch (error) {
+        this.lastError = error.message || '记忆加载失败。'
+      } finally {
+        this.memoryLoading = false
+      }
     },
     setMemoryFilter(type) { const allow = new Set(['all', 'preference', 'emotion']); this.memoryFilter = allow.has(type) ? type : 'all' },
     async setMemoryPinned(memoryId, pinned) {
       if (this.privacyMode) return
       this.lastError = ''
-      try { const data = await pinAssistantMemory(memoryId, pinned); this.memories = Array.isArray(data.memories) ? data.memories : this.memories; this.lastMemoryDigest = data.digest || this.lastMemoryDigest }
-      catch (error) { this.lastError = error.message || '记忆置顶操作失败。' }
+      try {
+        const data = await pinAssistantMemory(memoryId, pinned)
+        const list = Array.isArray(data.memories) ? data.memories : this.memories
+        this.memories = list.map((row) => normalizeMemoryRow(row))
+        this.lastMemoryDigest = data.digest != null ? String(data.digest) : this.lastMemoryDigest
+      } catch (error) {
+        this.lastError = error.message || '记忆置顶操作失败。'
+      }
     },
     async removeMemory(memoryId) {
       if (this.privacyMode) return
       this.lastError = ''
-      try { const data = await deleteAssistantMemory(memoryId); this.memories = Array.isArray(data.memories) ? data.memories : this.memories; this.lastMemoryDigest = data.digest || this.lastMemoryDigest }
-      catch (error) { this.lastError = error.message || '记忆删除失败。' }
+      try {
+        const data = await deleteAssistantMemory(memoryId)
+        const list = Array.isArray(data.memories) ? data.memories : this.memories
+        this.memories = list.map((row) => normalizeMemoryRow(row))
+        this.lastMemoryDigest = data.digest != null ? String(data.digest) : this.lastMemoryDigest
+      } catch (error) {
+        this.lastError = error.message || '记忆删除失败。'
+      }
     },
     async clearAllMemories() {
-      if (this.privacyMode) { this.memories = []; this.lastMemoryDigest = ''; this.memoryExportText = ''; return }
+      if (this.privacyMode) {
+        this.memories = []
+        this.lastMemoryDigest = ''
+        this.memoryExportText = ''
+        return
+      }
       this.lastError = ''
-      try { const data = await clearAssistantMemories(); this.memories = Array.isArray(data.memories) ? data.memories : []; this.lastMemoryDigest = data.digest || ''; this.memoryExportText = '' }
-      catch (error) { this.lastError = error.message || '记忆清空失败。' }
+      try {
+        const data = await clearAssistantMemories()
+        const list = Array.isArray(data.memories) ? data.memories : []
+        this.memories = list.map((row) => normalizeMemoryRow(row))
+        this.lastMemoryDigest = data.digest != null ? String(data.digest) : ''
+        this.memoryExportText = ''
+      } catch (error) {
+        this.lastError = error.message || '记忆清空失败。'
+      }
     },
     async exportMemories() {
       if (this.privacyMode) { this.memoryExportText = ''; return }

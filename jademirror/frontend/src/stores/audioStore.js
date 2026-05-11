@@ -1,4 +1,4 @@
-import { defineStore } from 'pinia'
+import { defineStore, getActivePinia } from 'pinia'
 
 const SOUND_MUTE_KEY = 'jademirror-sound-muted-v1'
 
@@ -33,6 +33,24 @@ export const useAudioStore = defineStore('audio', {
         localStorage.setItem(SOUND_MUTE_KEY, this.muted ? '1' : '0')
       } catch {
         // ignore localStorage failures in private mode
+      }
+      if (this.muted) {
+        this.stopAllSounds()
+        if (typeof window !== 'undefined' && window.speechSynthesis) {
+          try {
+            window.speechSynthesis.cancel()
+          } catch {
+            // ignore
+          }
+        }
+        const pinia = getActivePinia()
+        if (pinia) {
+          import('./voiceStore')
+            .then(({ useVoiceStore }) => {
+              useVoiceStore(pinia).stopSpeaking()
+            })
+            .catch(() => {})
+        }
       }
     },
     async ensureContext() {

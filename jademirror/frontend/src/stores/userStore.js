@@ -1,26 +1,11 @@
 import { defineStore } from 'pinia'
 import { createZeroVector } from '@/data/questions'
 
+const USER_STATE_STORAGE_KEY = 'jademirror-user-state-v1'
 const WORK_STORAGE_KEY = 'jademirror-works-v1'
 
-function readWorks() {
-  try {
-    const raw = localStorage.getItem(WORK_STORAGE_KEY)
-    return raw ? JSON.parse(raw) : []
-  } catch {
-    return []
-  }
-}
-
-function createWorkId() {
-  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-    return crypto.randomUUID()
-  }
-  return `work-${Date.now()}-${Math.random().toString(16).slice(2)}`
-}
-
-export const useUserStore = defineStore('user', {
-  state: () => ({
+function createDefaultUserState() {
+  return {
     testMode: '',
     testAnswers: {},
     userVector: createZeroVector(),
@@ -40,6 +25,41 @@ export const useUserStore = defineStore('user', {
     generatedModelUrl: '',
     generatedMultiViews: [],
     lastPrompt: '',
+  }
+}
+
+function readUserState() {
+  try {
+    const raw = localStorage.getItem(USER_STATE_STORAGE_KEY)
+    if (!raw) {
+      return createDefaultUserState()
+    }
+    const parsed = JSON.parse(raw)
+    return { ...createDefaultUserState(), ...parsed }
+  } catch {
+    return createDefaultUserState()
+  }
+}
+
+function readWorks() {
+  try {
+    const raw = localStorage.getItem(WORK_STORAGE_KEY)
+    return raw ? JSON.parse(raw) : []
+  } catch {
+    return []
+  }
+}
+
+function createWorkId() {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID()
+  }
+  return `work-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+export const useUserStore = defineStore('user', {
+  state: () => ({
+    ...readUserState(),
     works: readWorks(),
   }),
   getters: {
@@ -48,17 +68,28 @@ export const useUserStore = defineStore('user', {
     },
   },
   actions: {
+    persistUserState() {
+      const {
+        works,
+        ...stateToPersist
+      } = this.$state
+      localStorage.setItem(USER_STATE_STORAGE_KEY, JSON.stringify(stateToPersist))
+    },
     setTestMode(mode) {
       this.testMode = mode
+      this.persistUserState()
     },
     setAnswer(questionId, value) {
       this.testAnswers[questionId] = value
+      this.persistUserState()
     },
     setAllAnswers(payload) {
       this.testAnswers = { ...payload }
+      this.persistUserState()
     },
     setUserVector(vector) {
       this.userVector = { ...vector }
+      this.persistUserState()
     },
     setMatchResult({
       jade,
@@ -82,21 +113,26 @@ export const useUserStore = defineStore('user', {
       this.shadowJade = shadowJade
       this.shadowProfile = shadowProfile
       this.flowchartPath = flowchartPath || []
+      this.persistUserState()
     },
     setEmotion(emotion) {
       this.currentEmotion = emotion || 'neutral'
+      this.persistUserState()
     },
     setGeneratedResult({ imageDataUrl, prompt, modelUrl, originalUrl }) {
       this.generatedImageDataUrl = imageDataUrl || ''
       this.lastPrompt = prompt || ''
       if (modelUrl !== undefined) this.generatedModelUrl = modelUrl
       if (originalUrl !== undefined) this.generatedImageOriginalUrl = originalUrl
+      this.persistUserState()
     },
     setGeneratedModelUrl(url) {
       this.generatedModelUrl = url || ''
+      this.persistUserState()
     },
     setMultiViews(views) {
       this.generatedMultiViews = views || []
+      this.persistUserState()
     },
     clearGeneratedResult() {
       this.generatedImageDataUrl = ''
@@ -104,6 +140,7 @@ export const useUserStore = defineStore('user', {
       this.generatedModelUrl = ''
       this.generatedMultiViews = []
       this.lastPrompt = ''
+      this.persistUserState()
     },
     persistWorks() {
       localStorage.setItem(WORK_STORAGE_KEY, JSON.stringify(this.works))
@@ -151,6 +188,7 @@ export const useUserStore = defineStore('user', {
       this.flowchartPath = []
       this.currentEmotion = 'neutral'
       this.clearGeneratedResult()
+      this.persistUserState()
     },
   },
 })

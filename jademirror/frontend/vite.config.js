@@ -11,6 +11,9 @@ export default defineConfig({
     },
   },
   server: {
+    // 固定端口，终端始终提示同一地址；若访问 127.0.0.1，由 main.js 在开发环境重定向到 localhost
+    port: 5173,
+    strictPort: true,
     proxy: {
       '/api': {
         target: process.env.VITE_BACKEND_ORIGIN || 'http://127.0.0.1:5000',
