@@ -225,8 +225,29 @@ def init_auth_db():
         conn.execute(
             'CREATE INDEX IF NOT EXISTS idx_assistant_events_user ON assistant_events(user_id, created_at DESC)'
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS works (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                image_data_url TEXT NOT NULL,
+                jade_name TEXT NOT NULL,
+                jade_dynasty TEXT NOT NULL,
+                jade_description TEXT NOT NULL DEFAULT '',
+                jade_personality TEXT NOT NULL DEFAULT '',
+                jade_traits TEXT NOT NULL DEFAULT '{}',
+                prompt TEXT NOT NULL DEFAULT '',
+                date TEXT NOT NULL,
+                emotion TEXT NOT NULL DEFAULT 'neutral',
+                audio_params TEXT NOT NULL DEFAULT '{}',
+                created_at INTEGER NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+            """
+        )
         conn.execute('CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)')
         conn.execute('CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_works_user_id ON works(user_id)')
         conn.commit()
 
 
@@ -2628,5 +2649,138 @@ def serve_3d_model(filename):
     if not filepath.exists():
         return json_error('模型文件不存在。', 404)
     return send_from_directory(str(MODELS_DIR), safe_name, mimetype='model/gltf-binary')
+
+
+@bp.get('/api/works')
+def list_works():
+    auth_result, err = require_auth()
+    if err:
+        return err
+
+    user_id = auth_result['user']['id']
+    if not user_id:
+        return json_error('请先登录后再查看藏品。', 401)
+
+    with db_connect() as conn:
+        rows = conn.execute(
+            'SELECT * FROM works WHERE user_id = ? ORDER BY created_at DESC',
+            (user_id,),
+        ).fetchall()
+
+    return jsonify(
+        [
+            {
+                'id': row['id'],
+                'imageDataURL': row['image_data_url'],
+                'jadeName': row['jade_name'],
+                'jadeDynasty': row['jade_dynasty'],
+                'jadeDescription': row['jade_description'],
+                'jadePersonality': row['jade_personality'],
+                'jadeTraits': json.loads(row['jade_traits']),
+                'prompt': row['prompt'],
+                'date': row['date'],
+                'emotion': row['emotion'],
+                'audioParams': json.loads(row['audio_params']),
+            }
+            for row in rows
+        ]
+    )
+
+
+@bp.post('/api/works')
+def save_work():
+    auth_result, err = require_auth()
+    if err:
+        return err
+
+    user_id = auth_result['user']['id']
+    if not user_id:
+        return json_error('请先登录后再保存藏品。', 401)
+
+    data = request.get_json(silent=True) or {}
+    if not data.get('imageDataURL'):
+        return json_error('imageDataURL 不能为空。')
+
+    work_id = str(data.get('id', ''))
+    if not work_id:
+        return json_error('id 不能为空。')
+
+    with db_connect() as conn:
+        existing = conn.execute(
+            'SELECT id FROM works WHERE id = ? AND user_id = ?',
+            (work_id, user_id),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                """
+                UPDATE works SET
+                    image_data_url = ?, jade_name = ?, jade_dynasty = ?,
+                    jade_description = ?, jade_personality = ?, jade_traits = ?,
+                    prompt = ?, date = ?, emotion = ?, audio_params = ?
+                WHERE id = ? AND user_id = ?
+                """,
+                (
+                    str(data.get('imageDataURL', '')),
+                    str(data.get('jadeName', '')),
+                    str(data.get('jadeDynasty', '')),
+                    str(data.get('jadeDescription', '')),
+                    str(data.get('jadePersonality', '')),
+                    json.dumps(data.get('jadeTraits', {}), ensure_ascii=False),
+                    str(data.get('prompt', '')),
+                    str(data.get('date', '')),
+                    str(data.get('emotion', 'neutral')),
+                    json.dumps(data.get('audioParams', {}), ensure_ascii=False),
+                    work_id,
+                    user_id,
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO works(
+                    id, user_id, image_data_url, jade_name, jade_dynasty,
+                    jade_description, jade_personality, jade_traits,
+                    prompt, date, emotion, audio_params, created_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    work_id,
+                    user_id,
+                    str(data.get('imageDataURL', '')),
+                    str(data.get('jadeName', '')),
+                    str(data.get('jadeDynasty', '')),
+                    str(data.get('jadeDescription', '')),
+                    str(data.get('jadePersonality', '')),
+                    json.dumps(data.get('jadeTraits', {}), ensure_ascii=False),
+                    str(data.get('prompt', '')),
+                    str(data.get('date', '')),
+                    str(data.get('emotion', 'neutral')),
+                    json.dumps(data.get('audioParams', {}), ensure_ascii=False),
+                    utc_now_ts(),
+                ),
+            )
+        conn.commit()
+
+    return jsonify({'id': work_id, 'ok': True})
+
+
+@bp.delete('/api/works/<path:work_id>')
+def delete_work(work_id):
+    auth_result, err = require_auth()
+    if err:
+        return err
+
+    user_id = auth_result['user']['id']
+    if not user_id:
+        return json_error('请先登录后再删除藏品。', 401)
+
+    with db_connect() as conn:
+        conn.execute(
+            'DELETE FROM works WHERE id = ? AND user_id = ?',
+            (work_id, user_id),
+        )
+        conn.commit()
+
+    return jsonify({'ok': True})
 
 

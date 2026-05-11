@@ -50,5 +50,8 @@ jademirror/frontend/.env.*.local
 .DS_Store
 Thumbs.db
 
+# Canio 版本（勿提交）
+jademirror_canio/
+
 # Cursor
 .cursor/

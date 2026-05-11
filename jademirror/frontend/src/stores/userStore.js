@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { createZeroVector } from '@/data/questions'
+import http from '@/api/http'
 
 const USER_STATE_STORAGE_KEY = 'jademirror-user-state-v1'
 const WORK_STORAGE_KEY = 'jademirror-works-v1'
@@ -145,7 +146,15 @@ export const useUserStore = defineStore('user', {
     persistWorks() {
       localStorage.setItem(WORK_STORAGE_KEY, JSON.stringify(this.works))
     },
-    saveCurrentWork() {
+    async fetchWorks() {
+      try {
+        const { data } = await http.get('/works')
+        this.works = Array.isArray(data) ? data : []
+      } catch {
+        this.works = readWorks()
+      }
+    },
+    async saveCurrentWork() {
       if (!this.generatedImageDataUrl || !this.matchedJade) {
         return null
       }
@@ -166,11 +175,23 @@ export const useUserStore = defineStore('user', {
 
       this.works = [newWork, ...this.works]
       this.persistWorks()
+
+      try {
+        await http.post('/works', newWork)
+      } catch {
+        // server save failed, keep local copy
+      }
       return newWork
     },
-    removeWork(workId) {
+    async removeWork(workId) {
       this.works = this.works.filter((work) => work.id !== workId)
       this.persistWorks()
+
+      try {
+        await http.delete(`/works/${workId}`)
+      } catch {
+        // server delete failed, local copy already removed
+      }
     },
     resetTest() {
       this.testMode = ''

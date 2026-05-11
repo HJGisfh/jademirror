@@ -58,6 +58,15 @@ export const useAuthStore = defineStore('auth', {
         this.currentUser = u
       }
     },
+    async _syncWorksAfterAuth() {
+      try {
+        const { useUserStore } = await import('./userStore')
+        const userStore = useUserStore()
+        await userStore.fetchWorks()
+      } catch {
+        // ignore sync failures
+      }
+    },
     applyAuth({ user, token }) {
       this.currentUser = user || null
       this.token = token || ''
@@ -79,6 +88,7 @@ export const useAuthStore = defineStore('auth', {
 
       this.applyAuth({ user: data.user, token: data.token })
       this.sessionChecked = true
+      await this._syncWorksAfterAuth()
       return data.user
     },
     async guestLogin() {
@@ -86,6 +96,7 @@ export const useAuthStore = defineStore('auth', {
 
       this.applyAuth({ user: data.user, token: data.token })
       this.sessionChecked = true
+      await this._syncWorksAfterAuth()
       return data.user
     },
     async login({ username, password }) {
@@ -96,6 +107,7 @@ export const useAuthStore = defineStore('auth', {
 
       this.applyAuth({ user: data.user, token: data.token })
       this.sessionChecked = true
+      await this._syncWorksAfterAuth()
       return data.user
     },
     async fetchMe() {
@@ -129,6 +141,7 @@ export const useAuthStore = defineStore('auth', {
         if (user === null && !this.token) {
           return false
         }
+        await this._syncWorksAfterAuth()
         return true
       } catch (error) {
         const status = error?.status
