@@ -929,12 +929,12 @@ export const useAssistantStore = defineStore('assistant', {
       try {
         const imageUrl = await apiStore.generateImage({ prompt })
         let dataUrl = imageUrl; try { dataUrl = await urlToDataURL(imageUrl) } catch { dataUrl = imageUrl }
-        userStore.setGeneratedResult({ imageDataUrl: dataUrl, prompt })
+        userStore.setGeneratedResult({ imageDataUrl: dataUrl, prompt, originalUrl: imageUrl })
         this.appendMessage('assistant', '专属玉已经生成完成。我可以继续帮你保存到展厅。')
         this.speak('专属玉已经生成完成。我可以继续帮你保存到展厅。')
         if (this.autoGuide && router) router.push('/generate'); return true
       } catch {
-        const fallback = createFallbackJadeDataURL(jade.name); userStore.setGeneratedResult({ imageDataUrl: fallback, prompt })
+        const fallback = createFallbackJadeDataURL(jade.name); userStore.setGeneratedResult({ imageDataUrl: fallback, prompt, originalUrl: '' })
         this.appendMessage('assistant', '网络有点拥挤，我先为你保留一版临时玉图，你可稍后再次生成。')
         this.speak('网络有点拥挤，我先为你保留一版临时玉图，你可稍后再次生成。')
         if (this.autoGuide && router) router.push('/generate'); return false

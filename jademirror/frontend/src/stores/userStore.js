@@ -205,6 +205,7 @@ export const useUserStore = defineStore('user', {
       }
 
       const requireRemote = options.requireRemote ?? Boolean(readAuthToken())
+      const uploadSource = this.generatedImageOriginalUrl || this.generatedImageDataUrl
 
       const newWork = {
         id: createWorkId(),
@@ -221,13 +222,19 @@ export const useUserStore = defineStore('user', {
       }
 
       if (requireRemote) {
-        const { data } = await http.post('/works', newWork)
+        const { data } = await http.post('/works', {
+          ...newWork,
+          imageDataURL: uploadSource,
+        })
         if (data?.imageUrl) {
           newWork.imageDataURL = data.imageUrl
         }
       } else {
         try {
-          await http.post('/works', newWork)
+          await http.post('/works', {
+            ...newWork,
+            imageDataURL: uploadSource,
+          })
         } catch {
           // ignore if not logged in
         }
